@@ -1,0 +1,14 @@
+﻿ABC Technologies
+123 Business Street
+
+INVOICE
+
+Invoice Number: INV-2026-105
+Invoice Date: 2026-11-12
+Due Date: 2026-12-12
+
+Description: Software development services
+
+Subtotal: 500.00 USD
+VAT (15%): 75.00 USD
+Total Amount: 575.00 USD
