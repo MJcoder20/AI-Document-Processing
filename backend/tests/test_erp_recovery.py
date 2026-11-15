@@ -218,3 +218,85 @@ def test_real_database_recovers_stale_attempt_without_erp_invoice(real_db):
     assert "no ERP invoice was found" in integration_log.error_message
     assert integration_log.completed_at is not None
     assert document.status == "approved"
+
+def test_retry_after_erp_created_invoice_but_response_was_lost(real_db, monkeypatch):
+    from sqlalchemy import select, func
+    from app.models.extraction_result import ExtractionResult
+    from app.services.erp_integration import integrate_document, ERPIntegrationError
+    from app.services.simulated_erp import SimulatedERP
+
+    document = Document(
+        original_filename="retry-test.pdf",
+        storage_path="documents/retry-test.pdf",
+        content_type="application/pdf",
+        file_size=1024,
+        document_type="invoice",
+        status="approved",
+    )
+    real_db.add(document)
+    real_db.flush()
+
+    extraction = ExtractionResult(
+        document_id=document.id,
+        supplier_name="Idempotency Test Supplier",
+        invoice_number="IDEMPOTENCY-2026-001",
+        invoice_date=datetime(2026, 11, 15).date(),
+        currency="USD",
+        subtotal=500,
+        vat_amount=75,
+        total_amount=575,
+        extracted_data={"validation": {"is_valid": True}},
+    )
+    real_db.add(extraction)
+    real_db.commit()
+
+    original_create_invoice = SimulatedERP.create_invoice
+    first_response = {}
+    calls = {"count": 0}
+
+    def simulate_lost_response(self, invoice_data):
+        response = original_create_invoice(self, invoice_data)
+        calls["count"] += 1
+
+        if calls["count"] == 1:
+            first_response.update(response)
+            raise RuntimeError("Simulated lost ERP response")
+
+        return response
+
+    monkeypatch.setattr(
+        SimulatedERP,
+        "create_invoice",
+        simulate_lost_response,
+    )
+
+    with pytest.raises(ERPIntegrationError, match="Simulated lost ERP response"):
+        integrate_document(real_db, document.id)
+
+    real_db.refresh(document)
+    assert document.status == "approved"
+
+    first_log = real_db.scalar(
+        select(IntegrationLog).where(
+            IntegrationLog.document_id == document.id
+        )
+    )
+    assert first_log.status == IntegrationStatus.FAILED.value
+
+    retry_log = integrate_document(real_db, document.id)
+
+    real_db.refresh(document)
+
+    invoice_count = real_db.scalar(
+        select(func.count()).select_from(ERPInvoice).where(
+            ERPInvoice.supplier_name == "Idempotency Test Supplier",
+            ERPInvoice.invoice_number == "IDEMPOTENCY-2026-001",
+        )
+    )
+
+    assert retry_log.status == IntegrationStatus.SUCCESS.value
+    assert retry_log.attempt_number == 2
+    assert retry_log.external_record_id == first_response["external_record_id"]
+    assert invoice_count == 1
+    assert document.status == "integrated"
+    assert calls["count"] == 2
