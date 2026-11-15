@@ -2,7 +2,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
+
+    # Authentication
+    jwt_secret_key: SecretStr | None = None
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
 
     # Storage
     document_storage_dir: str = "storage/documents"
@@ -48,6 +53,9 @@ class Settings(BaseSettings):
         "http://localhost:5174",
     ]
 
+    # Security
+    allowed_hosts: list[str] = ["localhost", "127.0.0.1", "testserver"]
+
     # AI extraction
     ai_provider: Literal["mock", "openai", "ollama"] = "ollama"
 
@@ -61,6 +69,54 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:7b"
     ollama_timeout_seconds: int = 120
 
+    @model_validator(mode="after")
+    def validate_production_settings(self):
+        if self.app_env.lower() == "production":
+            if self.debug:
+                raise ValueError("DEBUG must be false in production.")
+
+            if self.jwt_algorithm != "HS256":
+                raise ValueError(
+                    "Production JWT_ALGORITHM must be HS256."
+                )
+
+            if self.jwt_secret_key is None:
+                raise ValueError("JWT_SECRET_KEY is required in production.")
+
+            if len(self.jwt_secret_key.get_secret_value()) < 32:
+                raise ValueError(
+                    "JWT_SECRET_KEY must contain at least 32 characters."
+                )
+
+            if not self.cors_origins:
+                raise ValueError("CORS_ORIGINS must be configured in production.")
+
+            if any("localhost" in origin or "127.0.0.1" in origin
+                   for origin in self.cors_origins):
+                raise ValueError(
+                    "Production CORS origins cannot contain localhost."
+                )
+
+            if any(
+                not origin.startswith("https://")
+                for origin in self.cors_origins
+            ):
+                raise ValueError(
+                    "Production CORS origins must use HTTPS."
+                )
+
+            if not self.allowed_hosts:
+                raise ValueError("ALLOWED_HOSTS must be configured in production.")
+
+            if any(
+                host in {"localhost", "127.0.0.1", "testserver"}
+                for host in self.allowed_hosts
+            ):
+                raise ValueError(
+                    "Production ALLOWED_HOSTS cannot contain local development hosts."
+                )
+
+        return self
 
 @lru_cache
 def get_settings() -> Settings:

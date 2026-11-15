@@ -13,18 +13,16 @@ from app.schemas.approval import (
 
 def test_approved_decision():
     approval = DocumentApprovalCreate(
-        reviewed_by="Finance Manager",
         decision=ApprovalDecision.APPROVED,
         comments="Invoice details verified.",
     )
 
     assert approval.decision == ApprovalDecision.APPROVED
-    assert approval.reviewed_by == "Finance Manager"
+    assert approval.comments == "Invoice details verified."
 
 
 def test_rejected_decision():
     approval = DocumentApprovalCreate(
-        reviewed_by="Finance Manager",
         decision=ApprovalDecision.REJECTED,
         comments="Incorrect invoice total.",
     )
@@ -34,34 +32,37 @@ def test_rejected_decision():
 
 def test_approval_rejects_invalid_decision():
     with pytest.raises(ValidationError):
-        DocumentApprovalCreate(
-            reviewed_by="Finance Manager",
-            decision="pending",
-        )
+        DocumentApprovalCreate(decision="pending")
 
 
-def test_approval_requires_reviewer():
-    with pytest.raises(ValidationError):
-        DocumentApprovalCreate(
-            reviewed_by="",
-            decision=ApprovalDecision.APPROVED,
-        )
+def test_approval_does_not_require_reviewer():
+    approval = DocumentApprovalCreate(
+        decision=ApprovalDecision.APPROVED,
+    )
+
+    assert approval.decision == ApprovalDecision.APPROVED
 
 
 def test_approval_requires_decision():
     with pytest.raises(ValidationError):
-        DocumentApprovalCreate(
-            reviewed_by="Finance Manager",
-        )
+        DocumentApprovalCreate()
 
 
 def test_approval_comments_are_optional():
     approval = DocumentApprovalCreate(
-        reviewed_by="Finance Manager",
         decision=ApprovalDecision.APPROVED,
     )
 
     assert approval.comments is None
+
+
+def test_client_cannot_set_reviewer_identity():
+    approval = DocumentApprovalCreate(
+        decision=ApprovalDecision.APPROVED,
+        reviewed_by="attacker@example.com",
+    )
+
+    assert not hasattr(approval, "reviewed_by")
 
 
 def test_approval_response_valid_data():
@@ -79,3 +80,4 @@ def test_approval_response_valid_data():
 
     assert approval.decision == ApprovalDecision.APPROVED
     assert approval.comments == "Verified."
+    assert approval.reviewed_by == "Finance Manager"

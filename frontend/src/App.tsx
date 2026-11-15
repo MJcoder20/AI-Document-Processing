@@ -11,8 +11,11 @@ import {
 } from "./services/api";
 import type { DocumentResponse, ExtractionResultResponse, IntegrationLogResponse,} from "./types/document";
 import "./App.css";
+import AuthScreen from "./components/AuthScreen";
+import { useAuth } from "./context/AuthContext";
 
-function App() {
+function Dashboard() {
+  const { user, logout } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
@@ -30,7 +33,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const [reviewerName, setReviewerName] = useState("");
   const [reviewComments, setReviewComments] = useState("");
 
   useEffect(() => {
@@ -221,10 +223,7 @@ function App() {
   ) => {
     if (!selectedDocument) return;
 
-    if (!reviewerName.trim()) {
-      setError("Please enter the reviewer name.");
-      return;
-    }
+
 
     setLoading(true);
     setError("");
@@ -232,7 +231,6 @@ function App() {
 
     try {
       await reviewDocument(selectedDocument.id, {
-        reviewed_by: reviewerName.trim(),
         decision,
         comments: reviewComments.trim() || null,
       });
@@ -387,11 +385,20 @@ function App() {
           </div>
 
           <div className="user-profile">
-            <div className="avatar">AI</div>
-            <div>
-              <div className="user-name">Administrator</div>
-              <div className="user-role">Workspace Admin</div>
+            <div className="avatar">
+              {user?.email?.charAt(0).toUpperCase() ?? "U"}
             </div>
+
+            <div>
+              <div className="user-name">{user?.email}</div>
+              <div className="user-role">
+                {user?.role === "admin" ? "Workspace Admin" : "Workspace User"}
+              </div>
+            </div>
+
+            <button className="btn btn-secondary" onClick={logout}>
+              Sign Out
+            </button>
           </div>
         </header>
 
@@ -648,17 +655,6 @@ function App() {
                 <h3>Review & Approval</h3>
 
                 <div className="review-form">
-                  <div className="review-field">
-                    <label htmlFor="reviewer-name">Reviewer Name</label>
-                    <input
-                      id="reviewer-name"
-                      type="text"
-                      value={reviewerName}
-                      onChange={(event) => setReviewerName(event.target.value)}
-                      placeholder="Enter your name"
-                      disabled={loading}
-                    />
-                  </div>
 
                   <div className="review-field">
                     <label htmlFor="review-comments">Comments</label>
@@ -677,7 +673,6 @@ function App() {
                       className="btn btn-primary"
                       disabled={
                         loading ||
-                        !reviewerName.trim() ||
                         extraction.extracted_data.validation?.is_valid !== true
                       }
                       onClick={() => handleReview("approved")}
@@ -692,7 +687,7 @@ function App() {
 
                     <button
                       className="btn btn-danger"
-                      disabled={loading || !reviewerName.trim()}
+                      disabled={loading}
                       onClick={() => handleReview("rejected")}
                     >
                       Reject Document
@@ -791,6 +786,24 @@ function App() {
       </main>
     </div>
   );
+}
+
+function App() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="auth-page">
+        <p>Restoring your session...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
+
+  return <Dashboard />;
 }
 
 export default App;

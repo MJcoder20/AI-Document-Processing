@@ -3,7 +3,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
+from pydantic import SecretStr
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
+from app.core.security import create_access_token, hash_password
+from app.models.user import User
+from app.core.security import create_access_token, hash_password
+from app.models.user import User
 from app.core.config import settings
 from app.api import documents as documents_api
 from app.models.outbox_message import OutboxMessage
@@ -18,17 +25,16 @@ from uuid import UUID, uuid4
 
 @pytest.fixture
 def api_environment(tmp_path, monkeypatch):
-    from app.core.config import settings
-
     storage_dir = tmp_path / "documents"
-    monkeypatch.setattr(settings, "processing_mode", "inline")
 
+    monkeypatch.setattr(settings, "processing_mode", "inline")
+    monkeypatch.setattr(settings, "document_storage_dir", str(storage_dir))
+    monkeypatch.setattr(settings, "max_upload_size_mb", 1)
     monkeypatch.setattr(
         settings,
-        "document_storage_dir",
-        str(storage_dir),
+        "jwt_secret_key",
+        SecretStr("test-secret-key-for-document-api"),
     )
-    monkeypatch.setattr(settings, "max_upload_size_mb", 1)
 
     engine = create_engine(
         "sqlite://",
@@ -53,14 +59,50 @@ def api_environment(tmp_path, monkeypatch):
 
     app.dependency_overrides[get_db] = override_get_db
 
-    with TestClient(app) as client:
-        client.testing_session_factory = TestingSessionLocal
-        yield client, storage_dir
+    # Create an administrator for the existing API tests.
+    with TestingSessionLocal() as db:
+        admin = User(
+            email="admin@example.com",
+            hashed_password=hash_password("TestPassword123!"),
+            role="admin",
+            is_active=True,
+        )
+        db.add(admin)
+        db.commit()
+        db.refresh(admin)
 
-    app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=engine)
-    engine.dispose()
+        access_token = create_access_token(admin.id)
 
+    try:
+        with TestClient(app) as client:
+            client.headers.update({
+                "Authorization": f"Bearer {access_token}"
+            })
+            client.testing_session_factory = TestingSessionLocal
+            client.admin_token = access_token
+            yield client, storage_dir
+
+    finally:
+        app.dependency_overrides.clear()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def create_test_user(client, email: str, role: str = "user"):
+    with client.testing_session_factory() as db:
+        user = User(
+            email=email,
+            hashed_password=hash_password("TestPassword123!"),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        user_id = user.id
+
+    return create_access_token(user_id), user_id
 
 def test_upload_document_success(api_environment):
     client, storage_dir = api_environment
@@ -445,7 +487,7 @@ def test_queue_database_failure_rolls_back_transaction(
     monkeypatch,
 ):
     client, _ = api_environment
-
+    original_commit = Session.commit
     monkeypatch.setattr(settings, "processing_mode", "azure_service_bus")
 
     upload_response = client.post(
@@ -472,7 +514,15 @@ def test_queue_database_failure_rolls_back_transaction(
 
     assert response.status_code == 500
 
-    monkeypatch.undo()
+    monkeypatch.setattr(Session, "commit", fail_commit)
+
+    response = client.post(
+        f"/api/v1/documents/{document_id}/process"
+    )
+
+    assert response.status_code == 500
+
+    monkeypatch.setattr(Session, "commit", original_commit)
 
     status_response = client.get(
         f"/api/v1/documents/{document_id}"
@@ -484,3 +534,161 @@ def test_queue_database_failure_rolls_back_transaction(
     with client.testing_session_factory() as db:
         messages = db.query(OutboxMessage).all()
         assert len(messages) == 0
+
+
+def test_document_api_rejects_unauthenticated_requests(api_environment):
+    client, _ = api_environment
+    client.headers.pop("Authorization", None)
+
+    response = client.get("/api/v1/documents/")
+
+    assert response.status_code == 401
+
+
+def test_users_can_only_access_their_own_documents(api_environment):
+    client, _ = api_environment
+
+    token_a, user_a_id = create_test_user(
+        client, "usera@example.com"
+    )
+    token_b, _ = create_test_user(
+        client, "userb@example.com"
+    )
+
+    # User A uploads a document.
+    client.headers["Authorization"] = f"Bearer {token_a}"
+
+    upload_response = client.post(
+        "/api/v1/documents/",
+        files={
+            "file": (
+                "private-invoice.pdf",
+                b"Private invoice content",
+                "application/pdf",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 201
+    document_id = upload_response.json()["id"]
+
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        document = db.get(Document, UUID(document_id))
+        assert document.owner_id == user_a_id
+
+    # User B cannot access User A's document.
+    client.headers["Authorization"] = f"Bearer {token_b}"
+
+    response = client.get(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 404
+
+    # User B cannot see User A's document in the listing.
+    response = client.get("/api/v1/documents/")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+    # User A can still access the document.
+    client.headers["Authorization"] = f"Bearer {token_a}"
+
+    response = client.get(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 200
+
+
+def test_admin_can_access_another_users_document(api_environment):
+    client, _ = api_environment
+
+    token, _ = create_test_user(
+        client, "documentowner@example.com"
+    )
+
+    client.headers["Authorization"] = f"Bearer {token}"
+
+    upload_response = client.post(
+        "/api/v1/documents/",
+        files={
+            "file": (
+                "invoice.pdf",
+                b"Invoice content",
+                "application/pdf",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 201
+    document_id = upload_response.json()["id"]
+
+    # Switch back to the administrator.
+    client.headers["Authorization"] = (
+        f"Bearer {client.admin_token}"
+    )
+
+    response = client.get(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 200
+
+
+def test_review_uses_authenticated_user_identity(
+    api_environment,
+    monkeypatch,
+):
+    client, _ = api_environment
+
+    token, _ = create_test_user(
+        client, "realreviewer@example.com"
+    )
+    client.headers["Authorization"] = f"Bearer {token}"
+
+    upload_response = client.post(
+        "/api/v1/documents/",
+        files={
+            "file": (
+                "invoice.pdf",
+                b"Invoice content",
+                "application/pdf",
+            )
+        },
+    )
+
+    assert upload_response.status_code == 201
+    document_id = upload_response.json()["id"]
+
+    captured = {}
+
+    def fake_review_document(**kwargs):
+        captured.update(kwargs)
+
+        now = datetime.now(timezone.utc)
+
+        return SimpleNamespace(
+            id=uuid4(),
+            document_id=UUID(document_id),
+            reviewed_by=kwargs["reviewed_by"],
+            decision="rejected",
+            comments=kwargs["comments"],
+            reviewed_at=now,
+            created_at=now,
+        )
+
+    monkeypatch.setattr(
+        documents_api,
+        "review_document",
+        fake_review_document,
+    )
+
+    response = client.post(
+        f"/api/v1/documents/{document_id}/review",
+        json={
+            "reviewed_by": "attacker@example.com",
+            "decision": "rejected",
+            "comments": "Rejected during testing.",
+        },
+    )
+
+    assert response.status_code == 201
+    assert captured["reviewed_by"] == "realreviewer@example.com"
+    assert response.json()["reviewed_by"] == "realreviewer@example.com"

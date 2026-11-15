@@ -13,7 +13,6 @@ class ApprovalDecision(str, Enum):
 class DocumentApprovalCreate(BaseModel):
     """Request schema for approving or rejecting a document."""
 
-    reviewed_by: str = Field(min_length=1, max_length=255)
     decision: ApprovalDecision
     comments: str | None = None
 

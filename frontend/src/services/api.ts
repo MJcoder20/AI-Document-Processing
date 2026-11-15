@@ -6,7 +6,32 @@ import { apiRequest } from "./apiClient";import type {
   IntegrationLogResponse,
 } from "../types/document";
 
-import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
+import type {
+  UserResponse,
+  TokenResponse,
+  LoginRequest,
+  RegisterRequest,
+} from "../types/auth";
+
+export function loginUser(data: LoginRequest): Promise<TokenResponse> {
+  return apiRequest<TokenResponse>("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export function registerUser(data: RegisterRequest): Promise<UserResponse> {
+  return apiRequest<UserResponse>("/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export function getCurrentUser(): Promise<UserResponse> {
+  return apiRequest<UserResponse>("/auth/me");
+}
 
 // Retrieve existing documents
 export function getDocuments(

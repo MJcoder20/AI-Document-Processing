@@ -5,8 +5,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.dependencies import get_current_user
 from app.db.session import get_db
 from app.models.document import Document
+from app.models.user import User
 from app.repositories.document import (
     create_document,
     get_document,
@@ -15,27 +18,24 @@ from app.repositories.document import (
 from app.repositories.extraction import get_latest_extraction
 from app.repositories.integration import list_document_integrations
 from app.repositories.outbox import create_outbox_message
-from app.schemas.integration import IntegrationLogResponse
 from app.schemas.approval import (
     DocumentApprovalCreate,
     DocumentApprovalResponse,
 )
+from app.schemas.document import DocumentResponse
+from app.schemas.extraction import ExtractionResultResponse
 from app.schemas.integration import IntegrationLogResponse
-from app.services.erp_integration import (
-    ERPIntegrationError,
-    integrate_document,
-)
 from app.services.document_approval import (
     DocumentApprovalError,
     review_document,
 )
-
-from app.schemas.document import DocumentResponse
-from app.core.config import settings
-from app.schemas.extraction import ExtractionResultResponse
 from app.services.document_processing import (
     DocumentProcessingError,
     process_document,
+)
+from app.services.erp_integration import (
+    ERPIntegrationError,
+    integrate_document,
 )
 from app.services.storage import (
     FileTooLargeError,
@@ -47,6 +47,28 @@ from app.services.storage import (
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
+def _get_accessible_document(
+    db: Session,
+    document_id: UUID,
+    current_user: User,
+) -> Document:
+    """Retrieve a document only if the user is allowed to access it."""
+
+    document = get_document(
+        db,
+        document_id,
+        current_user=current_user,
+    )
+
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
+        )
+
+    return document
+
+
 @router.get(
     "/",
     response_model=list[DocumentResponse],
@@ -56,8 +78,9 @@ def get_documents(
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Retrieve documents with pagination."""
+    """Retrieve documents accessible to the authenticated user."""
 
     if limit < 1 or limit > 100:
         raise HTTPException(
@@ -75,7 +98,9 @@ def get_documents(
         db,
         limit=limit,
         offset=offset,
+        current_user=current_user,
     )
+
 
 @router.post(
     "/",
@@ -85,8 +110,9 @@ def get_documents(
 async def upload_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Upload a document and create its database record."""
+    """Upload a document and assign it to the authenticated user."""
 
     original_filename = file.filename or "unnamed"
     content_type = file.content_type or "application/octet-stream"
@@ -113,6 +139,7 @@ async def upload_document(
             storage_path=storage_path,
             content_type=content_type,
             file_size=file_size,
+            owner_id=current_user.id,
         )
 
         return document
@@ -127,7 +154,6 @@ async def upload_document(
         ) from exc
 
 
-
 @router.post(
     "/{document_id}/process",
     response_model=ExtractionResultResponse | DocumentResponse,
@@ -136,16 +162,15 @@ async def upload_document(
 def process_uploaded_document(
     document_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Process a document inline or enqueue it for background processing."""
+    """Process an accessible document inline or in the background."""
 
-    document = db.get(Document, document_id)
-
-    if document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found.",
-        )
+    document = _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
 
     if settings.processing_mode in {
         "local_worker",
@@ -172,7 +197,6 @@ def process_uploaded_document(
                 },
             )
 
-            # Save both changes in one transaction.
             db.commit()
             db.refresh(document)
 
@@ -185,6 +209,7 @@ def process_uploaded_document(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="A database error occurred while queueing the document.",
             ) from exc
+
     try:
         return process_document(db, document_id)
 
@@ -214,14 +239,21 @@ def review_uploaded_document(
     document_id: UUID,
     review_data: DocumentApprovalCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Approve or reject a document after human review."""
+    """Approve or reject an accessible document."""
+
+    _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
 
     try:
         return review_document(
             db=db,
             document_id=document_id,
-            reviewed_by=review_data.reviewed_by,
+            reviewed_by=current_user.email,
             decision=review_data.decision,
             comments=review_data.comments,
         )
@@ -248,6 +280,7 @@ def review_uploaded_document(
             detail="A database error occurred during document review.",
         ) from exc
 
+
 @router.post(
     "/{document_id}/integrate",
     response_model=IntegrationLogResponse,
@@ -256,8 +289,16 @@ def review_uploaded_document(
 def integrate_uploaded_document(
     document_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Send an approved invoice to the ERP system."""
+    """Integrate an accessible approved document with the ERP system."""
+
+    _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
+
     try:
         return integrate_document(
             db=db,
@@ -295,18 +336,16 @@ def integrate_uploaded_document(
 def get_uploaded_document(
     document_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Retrieve a document and its current processing status."""
+    """Retrieve an accessible document and its processing status."""
 
-    document = get_document(db, document_id)
+    return _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
 
-    if document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found.",
-        )
-
-    return document
 
 @router.get(
     "/{document_id}/extraction",
@@ -316,16 +355,15 @@ def get_uploaded_document(
 def get_document_extraction(
     document_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Retrieve the latest extraction result for a document."""
+    """Retrieve the latest extraction for an accessible document."""
 
-    document = get_document(db, document_id)
-
-    if document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found.",
-        )
+    _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
 
     extraction = get_latest_extraction(db, document_id)
 
@@ -337,6 +375,7 @@ def get_document_extraction(
 
     return extraction
 
+
 @router.get(
     "/{document_id}/integrations",
     response_model=list[IntegrationLogResponse],
@@ -345,17 +384,14 @@ def get_document_extraction(
 def get_document_integration_history(
     document_id: UUID,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Retrieve all ERP integration attempts for a document."""
+    """Retrieve integration history for an accessible document."""
 
-    document = get_document(db, document_id)
-
-    if document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found.",
-        )
+    _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
 
     return list_document_integrations(db, document_id)
-
-

@@ -1,4 +1,3 @@
-
 export type DocumentType =
   | "invoice"
   | "purchase_order"
@@ -67,7 +66,6 @@ export interface DocumentResponse {
 export type ApprovalDecision = "approved" | "rejected";
 
 export interface DocumentApprovalCreate {
-  reviewed_by: string;
   decision: ApprovalDecision;
   comments: string | null;
 }
