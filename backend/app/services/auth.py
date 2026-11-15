@@ -1,4 +1,6 @@
+
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password, verify_password
@@ -26,9 +28,15 @@ def register_user(
         is_active=True,
     )
 
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError(
+            "An account with this email already exists."
+        ) from exc
 
     return user
 
@@ -44,10 +52,7 @@ def authenticate_user(
         select(User).where(User.email == normalized_email)
     )
 
-    if user is None:
-        return None
-
-    if not user.is_active:
+    if user is None or not user.is_active:
         return None
 
     if not verify_password(password, user.hashed_password):

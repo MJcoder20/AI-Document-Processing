@@ -11,6 +11,7 @@ import jwt
 from fastapi import HTTPException
 from app.core.config import settings
 from app.core.dependencies import require_admin
+from app.core.security import create_access_token, decode_access_token
 from app.models.user import User
 from app.db.base import Base
 from app.db.session import get_db
@@ -196,3 +197,129 @@ def test_require_admin_accepts_admin():
     )
 
     assert require_admin(current_user=admin) is admin
+
+
+def test_access_token_contains_required_claims(auth_client):
+    user_id = uuid4()
+    token = create_access_token(user_id)
+
+    payload = jwt.decode(
+        token,
+        settings.jwt_secret_key.get_secret_value(),
+        algorithms=[settings.jwt_algorithm],
+        issuer="docuflow-ai",
+        audience="docuflow-api",
+    )
+
+    assert payload["sub"] == str(user_id)
+    assert payload["iss"] == "docuflow-ai"
+    assert payload["aud"] == "docuflow-api"
+    assert payload["type"] == "access"
+
+
+def test_decode_rejects_wrong_token_type(auth_client):
+    user_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    token = jwt.encode(
+        {
+            "sub": str(user_id),
+            "exp": now + timedelta(minutes=30),
+            "iat": now,
+            "iss": "docuflow-ai",
+            "aud": "docuflow-api",
+            "type": "refresh",
+        },
+        settings.jwt_secret_key.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+
+    with pytest.raises(jwt.InvalidTokenError):
+        decode_access_token(token)
+
+
+@pytest.mark.parametrize(
+    ("issuer", "audience"),
+    [
+        ("another-service", "docuflow-api"),
+        ("docuflow-ai", "another-api"),
+    ],
+)
+def test_decode_rejects_wrong_issuer_or_audience(
+    auth_client,
+    issuer,
+    audience,
+):
+    now = datetime.now(timezone.utc)
+
+    token = jwt.encode(
+        {
+            "sub": str(uuid4()),
+            "exp": now + timedelta(minutes=30),
+            "iat": now,
+            "iss": issuer,
+            "aud": audience,
+            "type": "access",
+        },
+        settings.jwt_secret_key.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
+    )
+
+    with pytest.raises(jwt.InvalidTokenError):
+        decode_access_token(token)
+
+
+def test_login_rate_limit_returns_429_and_retry_after(auth_client):
+    payload = {
+        "email": "ratelimit@example.com",
+        "password": "WrongPassword123",
+    }
+
+    # The first five failed attempts are rejected normally.
+    for _ in range(5):
+        response = auth_client.post("/api/v1/auth/login", json=payload)
+        assert response.status_code == 401
+
+    # The next attempt is blocked.
+    response = auth_client.post("/api/v1/auth/login", json=payload)
+
+    assert response.status_code == 429
+    assert "Retry-After" in response.headers
+    assert int(response.headers["Retry-After"]) > 0
+
+
+def test_successful_login_resets_rate_limit(auth_client):
+    payload = {
+        "email": "reset@example.com",
+        "password": "SecurePassword123",
+    }
+
+    registration = auth_client.post(
+        "/api/v1/auth/register",
+        json=payload,
+    )
+    assert registration.status_code == 201
+
+    wrong_payload = {
+        "email": payload["email"],
+        "password": "WrongPassword123",
+    }
+
+    # Four failed attempts must not block the account.
+    for _ in range(4):
+        response = auth_client.post(
+            "/api/v1/auth/login",
+            json=wrong_payload,
+        )
+        assert response.status_code == 401
+
+    # Successful login clears the failed-attempt counter.
+    response = auth_client.post("/api/v1/auth/login", json=payload)
+    assert response.status_code == 200
+
+    # A new failure starts from one attempt, not five.
+    response = auth_client.post(
+        "/api/v1/auth/login",
+        json=wrong_payload,
+    )
+    assert response.status_code == 401

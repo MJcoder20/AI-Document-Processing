@@ -34,3 +34,6 @@ backend/storage/
 # Python virtual environments
 .venv/
 venv/
+
+# Root-level local document storage
+storage/

@@ -5,10 +5,11 @@ from app.db.session import SessionLocal
 from app.services.local_outbox_processor import (
     process_pending_outbox_messages,
 )
+from app.services.login_rate_limiter import cleanup_expired_login_attempts
 from app.services.erp_integration import recover_stale_integrations
 
 POLL_INTERVAL_SECONDS = 10
-
+LOGIN_ATTEMPT_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +19,7 @@ logging.basicConfig(
 
 def main():
     logging.info("Local outbox worker started.")
+    last_login_attempt_cleanup = 0.0
 
     try:
         while True:
@@ -43,6 +45,21 @@ def main():
                         recovery_results["retryable"],
                         recovery_results["errors"],
                     )
+
+                current_time = time.monotonic()
+
+                if (
+                    current_time - last_login_attempt_cleanup
+                    >= LOGIN_ATTEMPT_CLEANUP_INTERVAL_SECONDS
+                ):
+                    deleted_count = cleanup_expired_login_attempts(db)
+
+                    logging.info(
+                        "Login-attempt cleanup completed: deleted=%s",
+                        deleted_count,
+                    )
+
+                    last_login_attempt_cleanup = current_time
 
                 if any(results.values()):
                     logging.info(
