@@ -6,6 +6,18 @@ export type DocumentType =
   | "unknown";
 
 
+export interface DuplicateInvoiceReference {
+  document_id: string;
+  filename: string;
+  supplier_name: string | null;
+  invoice_number: string | null;
+  invoice_date: string | null;
+  currency: string | null;
+  total_amount: string | null;
+  created_at: string | null;
+}
+
+
 export interface ExtractionResultResponse {
   id: string;
   document_id: string;
@@ -29,6 +41,8 @@ export interface ExtractionResultResponse {
       warnings?: unknown[];
       status?: string;
       is_valid?: boolean;
+      duplicate_detected?: boolean;
+      duplicate_of?: DuplicateInvoiceReference | null;
     };
     [key: string]: unknown;
   };

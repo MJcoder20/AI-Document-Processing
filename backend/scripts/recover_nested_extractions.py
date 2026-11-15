@@ -158,8 +158,11 @@ def main(apply_changes: bool) -> None:
         # Phase 3: Validate after all target invoice fields are populated.
         for item in prepared:
             extraction = item["extraction"]
-            validation = validate_invoice(db, extraction)
-
+            validation = validate_invoice(
+                db=db,
+                extraction=extraction,
+                document=item["document"],
+            )
             updated_data = copy.deepcopy(extraction.extracted_data)
             updated_data["validation"] = validation
             extraction.extracted_data = updated_data

@@ -626,10 +626,54 @@ function Dashboard() {
                 {extraction.extracted_data.validation?.status === "duplicate" && (
                   <div className="duplicate-warning">
                     <strong>⚠ Duplicate Invoice Detected</strong>
+
                     <p>
-                      This invoice may already exist in the system for the same supplier
-                      and invoice number. Review the existing records before taking action.
+                      An earlier invoice with the same supplier and invoice number
+                      was found in your documents.
                     </p>
+
+                    {extraction.extracted_data.validation.duplicate_of && (
+                      <div className="duplicate-details">
+                        <h4>Previously Uploaded Invoice</h4>
+
+                        <div className="duplicate-detail-row">
+                          <span>Filename</span>
+                          <strong>
+                            {extraction.extracted_data.validation.duplicate_of.filename}
+                          </strong>
+                        </div>
+
+                        <div className="duplicate-detail-row">
+                          <span>Supplier</span>
+                          <strong>
+                            {extraction.extracted_data.validation.duplicate_of.supplier_name || "Unknown"}
+                          </strong>
+                        </div>
+
+                        <div className="duplicate-detail-row">
+                          <span>Invoice Number</span>
+                          <strong>
+                            {extraction.extracted_data.validation.duplicate_of.invoice_number || "Unknown"}
+                          </strong>
+                        </div>
+
+                        <div className="duplicate-detail-row">
+                          <span>Invoice Date</span>
+                          <strong>
+                            {extraction.extracted_data.validation.duplicate_of.invoice_date || "Unknown"}
+                          </strong>
+                        </div>
+
+                        <div className="duplicate-detail-row">
+                          <span>Total Amount</span>
+                          <strong>
+                            {extraction.extracted_data.validation.duplicate_of.total_amount != null
+                              ? `${extraction.extracted_data.validation.duplicate_of.total_amount} ${extraction.extracted_data.validation.duplicate_of.currency || ""}`
+                              : "Unknown"}
+                          </strong>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

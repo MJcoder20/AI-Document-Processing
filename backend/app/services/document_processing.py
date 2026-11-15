@@ -93,6 +93,7 @@ def process_document(
         validation_result = validate_invoice(
             db=db,
             extraction=extraction_result,
+            document=document,
         )
 
         # Step 6: Store validation results separately.
