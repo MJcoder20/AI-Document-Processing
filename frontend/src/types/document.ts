@@ -39,6 +39,7 @@ export interface ExtractionResultResponse {
   extracted_data: {
     validation?: {
       warnings?: unknown[];
+      errors?: unknown[];
       status?: string;
       is_valid?: boolean;
       duplicate_detected?: boolean;
@@ -52,6 +53,30 @@ export interface ExtractionResultResponse {
 
   created_at: string;
 }
+
+
+export interface ExtractionCorrection {
+  supplier_name?: string | null;
+  invoice_number?: string | null;
+  invoice_date?: string | null;
+  due_date?: string | null;
+  currency?: string | null;
+  subtotal?: number | null;
+  vat_amount?: number | null;
+  total_amount?: number | null;
+}
+
+export interface ExtractionEditResponse {
+  id: string;
+  document_id: string;
+  extraction_id: string;
+  edited_by: string;
+  changed_fields: string[];
+  before_data: Record<string, string | null>;
+  after_data: Record<string, string | null>;
+  created_at: string;
+}
+
 
 export type DocumentStatus =
   | "uploaded"

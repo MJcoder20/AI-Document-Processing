@@ -692,3 +692,252 @@ def test_review_uses_authenticated_user_identity(
     assert response.status_code == 201
     assert captured["reviewed_by"] == "realreviewer@example.com"
     assert response.json()["reviewed_by"] == "realreviewer@example.com"
+
+
+def create_pending_review_document(client, owner_id=None):
+    """Create a pending-review document with a valid invoice extraction."""
+    from datetime import date
+    from decimal import Decimal
+
+    from app.models.document import Document
+    from app.models.extraction_result import ExtractionResult
+    from app.models.user import User
+
+    with client.testing_session_factory() as db:
+        if owner_id is None:
+            owner = db.query(User).filter_by(
+                email="admin@example.com"
+            ).first()
+            owner_id = owner.id
+
+        document = Document(
+            owner_id=owner_id,
+            original_filename="review-invoice.pdf",
+            storage_path="test/review-invoice.pdf",
+            content_type="application/pdf",
+            file_size=1024,
+            document_type="invoice",
+            status="pending_review",
+        )
+
+        db.add(document)
+        db.flush()
+
+        extraction = ExtractionResult(
+            document_id=document.id,
+            supplier_name="Acme Ltd",
+            invoice_number="INV-2026-001",
+            invoice_date=date(2026, 11, 10),
+            due_date=date(2026, 12, 10),
+            currency="USD",
+            subtotal=Decimal("100.00"),
+            vat_amount=Decimal("15.00"),
+            total_amount=Decimal("115.00"),
+            confidence_score=Decimal("0.9500"),
+            extracted_data={
+                "text": "Original invoice text",
+                "tables": [],
+                "validation": {
+                    "status": "valid",
+                    "is_valid": True,
+                    "errors": [],
+                    "warnings": [],
+                    "duplicate_detected": False,
+                    "duplicate_of": None,
+                },
+            },
+            extraction_provider="ollama",
+            extraction_model="test-model",
+        )
+
+        db.add(extraction)
+        db.commit()
+
+        return str(document.id)
+
+
+
+def test_correct_extraction_updates_fields_and_revalidates(
+    api_environment,
+):
+    client, _ = api_environment
+    document_id = create_pending_review_document(client)
+
+    response = client.patch(
+        f"/api/v1/documents/{document_id}/extraction",
+        json={
+            "subtotal": "105.00",
+            "total_amount": "120.00",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["subtotal"] == "105.00"
+    assert data["total_amount"] == "120.00"
+    assert data["extracted_data"]["validation"]["status"] == "valid"
+    assert data["extracted_data"]["validation"]["is_valid"] is True
+
+    with client.testing_session_factory() as db:
+        from app.models.extraction_edit import ExtractionEdit
+
+        edits = db.query(ExtractionEdit).filter_by(
+            document_id=UUID(document_id)
+        ).all()
+
+        assert len(edits) == 1
+        assert edits[0].edited_by == "admin@example.com"
+        assert set(edits[0].changed_fields) == {
+            "subtotal",
+            "total_amount",
+        }
+        assert edits[0].before_data["total_amount"] == "115.00"
+        assert edits[0].after_data["total_amount"] == "120.00"
+
+
+def test_correct_extraction_can_make_invoice_invalid(
+    api_environment,
+):
+    client, _ = api_environment
+    document_id = create_pending_review_document(client)
+
+    response = client.patch(
+        f"/api/v1/documents/{document_id}/extraction",
+        json={"total_amount": "999.00"},
+    )
+
+    assert response.status_code == 200
+
+    validation = response.json()["extracted_data"]["validation"]
+
+    assert validation["status"] == "invalid"
+    assert validation["is_valid"] is False
+    assert "Invoice total does not equal subtotal plus VAT." in (
+        validation["errors"]
+    )
+
+
+def test_extraction_correction_history_returns_audit_records(
+    api_environment,
+):
+    client, _ = api_environment
+    document_id = create_pending_review_document(client)
+
+    correction_response = client.patch(
+        f"/api/v1/documents/{document_id}/extraction",
+        json={"invoice_number": "INV-2026-UPDATED"},
+    )
+
+    assert correction_response.status_code == 200
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/extraction/history"
+    )
+
+    assert response.status_code == 200
+
+    history = response.json()
+
+    assert len(history) == 1
+    assert history[0]["edited_by"] == "admin@example.com"
+    assert history[0]["changed_fields"] == ["invoice_number"]
+    assert history[0]["before_data"]["invoice_number"] == (
+        "INV-2026-001"
+    )
+    assert history[0]["after_data"]["invoice_number"] == (
+        "INV-2026-UPDATED"
+    )
+
+
+def test_cannot_correct_extraction_for_non_pending_document(
+    api_environment,
+):
+    client, _ = api_environment
+    document_id = create_pending_review_document(client)
+
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        document = db.get(Document, UUID(document_id))
+        document.status = "integrated"
+        db.commit()
+
+    response = client.patch(
+        f"/api/v1/documents/{document_id}/extraction",
+        json={"total_amount": "120.00"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Only documents pending review can be edited."
+    )
+
+
+def test_user_cannot_correct_or_view_another_users_extraction(
+    api_environment,
+):
+    client, _ = api_environment
+
+    document_id = create_pending_review_document(client)
+
+    user_token, _ = create_test_user(
+        client,
+        "anotheruser@example.com",
+    )
+
+    client.headers["Authorization"] = f"Bearer {user_token}"
+
+    correction_response = client.patch(
+        f"/api/v1/documents/{document_id}/extraction",
+        json={"total_amount": "120.00"},
+    )
+
+    history_response = client.get(
+        f"/api/v1/documents/{document_id}/extraction/history"
+    )
+
+    assert correction_response.status_code == 404
+    assert history_response.status_code == 404
+
+
+
+def test_invalid_corrected_invoice_cannot_be_approved(
+    api_environment,
+):
+    client, _ = api_environment
+    document_id = create_pending_review_document(client)
+
+    # Correct the invoice with an inconsistent total.
+    correction_response = client.patch(
+        f"/api/v1/documents/{document_id}/extraction",
+        json={"total_amount": "999.00"},
+    )
+
+    assert correction_response.status_code == 200
+
+    validation = correction_response.json()["extracted_data"]["validation"]
+    assert validation["is_valid"] is False
+    assert validation["status"] == "invalid"
+
+    # Attempt to approve the invalid invoice.
+    approval_response = client.post(
+        f"/api/v1/documents/{document_id}/review",
+        json={
+            "decision": "approved",
+            "comments": "Attempting to approve an invalid invoice.",
+        },
+    )
+
+    assert approval_response.status_code == 409
+    assert "Cannot approve an invoice" in (
+        approval_response.json()["detail"]
+    )
+
+    # Verify the document remains pending review.
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        document = db.get(Document, UUID(document_id))
+        assert document.status == "pending_review"

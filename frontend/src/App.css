@@ -663,3 +663,31 @@
     width: 100%;
   }
 }
+
+.validation-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  margin: 16px 0;
+  border-radius: 8px;
+  border: 1px solid;
+}
+
+.validation-status ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.validation-valid {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.validation-invalid,
+.validation-duplicate {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}

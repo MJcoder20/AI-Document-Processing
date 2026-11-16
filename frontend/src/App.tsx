@@ -8,11 +8,26 @@ import {
   processDocument,
   reviewDocument,
   uploadDocument,
+  correctDocumentExtraction,
+  getExtractionHistory,
 } from "./services/api";
-import type { DocumentResponse, ExtractionResultResponse, IntegrationLogResponse,} from "./types/document";
+import type { DocumentResponse, ExtractionResultResponse, IntegrationLogResponse, ExtractionCorrection,
+ExtractionEditResponse} from "./types/document";
 import "./App.css";
 import AuthScreen from "./components/AuthScreen";
 import { useAuth } from "./context/AuthContext";
+
+
+type InvoiceFormValues = {
+  supplier_name: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string;
+  currency: string;
+  subtotal: string;
+  vat_amount: string;
+  total_amount: string;
+};
 
 function Dashboard() {
   const { user, logout } = useAuth();
@@ -35,6 +50,123 @@ function Dashboard() {
   const [success, setSuccess] = useState("");
   const [reviewComments, setReviewComments] = useState("");
 
+  const [invoiceForm, setInvoiceForm] = useState<InvoiceFormValues>({
+    supplier_name: "",
+    invoice_number: "",
+    invoice_date: "",
+    due_date: "",
+    currency: "",
+    subtotal: "",
+    vat_amount: "",
+    total_amount: "",
+  });
+
+  const [extractionHistory, setExtractionHistory] =
+    useState<ExtractionEditResponse[]>([]);
+
+  const populateInvoiceForm = (data: ExtractionResultResponse) => {
+    setInvoiceForm({
+      supplier_name: data.supplier_name ?? "",
+      invoice_number: data.invoice_number ?? "",
+      invoice_date: data.invoice_date ?? "",
+      due_date: data.due_date ?? "",
+      currency: data.currency ?? "",
+      subtotal: data.subtotal?.toString() ?? "",
+      vat_amount: data.vat_amount?.toString() ?? "",
+      total_amount: data.total_amount?.toString() ?? "",
+    });
+  };
+
+
+  const handleSaveCorrections = async () => {
+    if (!selectedDocument || !extraction) {
+      setError("Cannot save: no document or extraction is selected.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      const corrections: ExtractionCorrection = {};
+
+      const stringFields = [
+        "supplier_name",
+        "invoice_number",
+        "invoice_date",
+        "due_date",
+        "currency",
+      ] as const;
+
+      stringFields.forEach((field) => {
+        const value = invoiceForm[field].trim();
+        const normalizedValue =
+          field === "currency" ? value.toUpperCase() : value;
+        const currentValue = extraction[field] ?? "";
+
+        if (normalizedValue !== currentValue) {
+          corrections[field] = normalizedValue || null;
+        }
+      });
+      const numberFields = [
+        "subtotal",
+        "vat_amount",
+        "total_amount",
+      ] as const;
+
+      numberFields.forEach((field) => {
+        const value = invoiceForm[field].trim();
+        const normalizedValue = value === "" ? null : Number(value);
+
+        const currentValue =
+          extraction[field] == null ? null : Number(extraction[field]);
+
+        if (normalizedValue !== currentValue) {
+          corrections[field] = normalizedValue;
+        }
+      });
+
+      if (Object.keys(corrections).length === 0) {
+        setSuccess("No changes detected.");
+        return;
+      }
+
+      const updatedExtraction = await correctDocumentExtraction(
+        selectedDocument.id,
+        corrections,
+      );
+
+
+      setExtraction(updatedExtraction);
+      populateInvoiceForm(updatedExtraction);
+
+      const history = await getExtractionHistory(selectedDocument.id);
+      setExtractionHistory(history);
+
+      setSuccess("Corrections saved and invoice revalidated.");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not save invoice corrections.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
+    const loadExtractionHistory = async (documentId: string) => {
+      try {
+        const history = await getExtractionHistory(documentId);
+        setExtractionHistory(history);
+      } catch (err) {
+        setExtractionHistory([]);
+        console.error("Could not load extraction history:", err);
+      }
+    };
+
   useEffect(() => {
     const loadDocuments = async () => {
       setLoading(true);
@@ -53,7 +185,12 @@ function Dashboard() {
             const extractedData = await getDocumentExtraction(
               latestDocument.id,
             );
+
             setExtraction(extractedData);
+            populateInvoiceForm(extractedData);
+
+            const history = await getExtractionHistory(latestDocument.id);
+            setExtractionHistory(history);
           }
           if (latestDocument.status === "approved") {
             const history = await getIntegrationHistory(latestDocument.id);
@@ -161,6 +298,8 @@ function Dashboard() {
       if (updated.status === "pending_review") {
         const extractedData = await getDocumentExtraction(updated.id);
         setExtraction(extractedData);
+        populateInvoiceForm(extractedData);
+        await loadExtractionHistory(updated.id);
       } else {
         setExtraction(null);
       }
@@ -181,6 +320,17 @@ function Dashboard() {
     setSelectedDocument(document);
     setExtraction(null);
     setIntegrationHistory([]);
+    setExtractionHistory([]);
+    setInvoiceForm({
+      supplier_name: "",
+      invoice_number: "",
+      invoice_date: "",
+      due_date: "",
+      currency: "",
+      subtotal: "",
+      vat_amount: "",
+      total_amount: "",
+    });
     setError("");
     setSuccess("");
     setLoading(true);
@@ -197,6 +347,8 @@ function Dashboard() {
       ) {
         const extractedData = await getDocumentExtraction(document.id);
         setExtraction(extractedData);
+        populateInvoiceForm(extractedData);
+        await loadExtractionHistory(document.id);
       }
 
       if (
@@ -622,6 +774,34 @@ function Dashboard() {
                       : `${(extraction.confidence_score * 100).toFixed(1)}%`}
                   </span>
                 </div>
+                {extraction.extracted_data.validation && (
+                  <div
+                    className={`validation-status validation-${extraction.extracted_data.validation.status}`}
+                  >
+                    <strong>
+                      Validation Status:{" "}
+                      {(extraction.extracted_data.validation.status ?? "unknown")
+                        .replace("_", " ")
+                        .toUpperCase()}
+                    </strong>
+
+                    <span>
+                      {extraction.extracted_data.validation.is_valid
+                        ? "All validation checks passed."
+                        : "This invoice requires attention before approval."}
+                    </span>
+
+                    {(extraction.extracted_data.validation.errors ?? []).length > 0 && (
+                      <ul>
+                        {(extraction.extracted_data.validation.errors ?? []).map(
+                          (error, index) => (
+                            <li key={index}>{String(error)}</li>
+                          ),
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                )}
 
                 {extraction.extracted_data.validation?.status === "duplicate" && (
                   <div className="duplicate-warning">
@@ -694,6 +874,105 @@ function Dashboard() {
 
               </div>
             )}
+
+
+            {selectedDocument.status === "pending_review" && extraction && (
+              <div className="review-section">
+                <h3>Edit Extracted Invoice Data</h3>
+                <p className="section-description">
+                  Correct the extracted fields before approving this invoice.
+                </p>
+
+                <div className="review-form">
+                  {(
+                    [
+                      ["supplier_name", "Supplier", "text"],
+                      ["invoice_number", "Invoice Number", "text"],
+                      ["invoice_date", "Invoice Date", "date"],
+                      ["due_date", "Due Date", "date"],
+                      ["currency", "Currency", "text"],
+                      ["subtotal", "Subtotal", "number"],
+                      ["vat_amount", "VAT Amount", "number"],
+                      ["total_amount", "Total Amount", "number"],
+                    ] as const
+                  ).map(([field, label, type]) => (
+                    <div className="review-field" key={field}>
+                      <label htmlFor={`invoice-${field}`}>{label}</label>
+                      <input
+                        id={`invoice-${field}`}
+                        type={type}
+                        step={type === "number" ? "0.01" : undefined}
+                        value={invoiceForm[field]}
+                        onChange={(event) =>
+                          setInvoiceForm((previous) => ({
+                            ...previous,
+                            [field]: event.target.value,
+                          }))
+                        }
+                        disabled={loading}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="review-actions">
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={loading}
+                    onClick={handleSaveCorrections}
+                  >
+                    {loading ? "Saving..." : "Save Corrections & Revalidate"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+
+            {selectedDocument.status === "pending_review" && (
+              <div className="review-section">
+                <h3>Correction Audit History</h3>
+
+                {extractionHistory.length === 0 ? (
+                  <p className="detail-text">
+                    No manual corrections have been recorded.
+                  </p>
+                ) : (
+                  <div className="integration-history">
+                    {extractionHistory.map((edit) => (
+                      <div className="integration-item" key={edit.id}>
+                        <strong>Edited by: {edit.edited_by}</strong>
+
+                        <p className="detail-text">
+                          Date: {new Date(edit.created_at).toLocaleString()}
+                        </p>
+
+                        <p className="detail-text">
+                          Changed fields: {edit.changed_fields.join(", ")}
+                        </p>
+
+                        <details>
+                          <summary>View before and after values</summary>
+
+                          {edit.changed_fields.map((field) => (
+                            <div className="duplicate-detail-row" key={field}>
+                              <strong>{field.replaceAll("_", " ")}</strong>
+                              <span>
+                                {String(edit.before_data[field] ?? "Empty")}
+                                {" → "}
+                                {String(edit.after_data[field] ?? "Empty")}
+                              </span>
+                            </div>
+                          ))}
+                        </details>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+
             {selectedDocument.status === "pending_review" && extraction && (
               <div className="review-section">
                 <h3>Review & Approval</h3>

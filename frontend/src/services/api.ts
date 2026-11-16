@@ -4,6 +4,8 @@ import { apiRequest } from "./apiClient";import type {
   DocumentApprovalCreate,
   DocumentApprovalResponse,
   IntegrationLogResponse,
+  ExtractionCorrection,
+  ExtractionEditResponse,
 } from "../types/document";
 
 import type {
@@ -116,5 +118,32 @@ export function getIntegrationHistory(
 ): Promise<IntegrationLogResponse[]> {
   return apiRequest<IntegrationLogResponse[]>(
     `/documents/${documentId}/integrations`,
+  );
+}
+
+
+// Correct extracted invoice fields and revalidate
+export function correctDocumentExtraction(
+  documentId: string,
+  corrections: ExtractionCorrection,
+): Promise<ExtractionResultResponse> {
+  return apiRequest<ExtractionResultResponse>(
+    `/documents/${documentId}/extraction`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(corrections),
+    },
+  );
+}
+
+// Retrieve extraction correction audit history
+export function getExtractionHistory(
+  documentId: string,
+): Promise<ExtractionEditResponse[]> {
+  return apiRequest<ExtractionEditResponse[]>(
+    `/documents/${documentId}/extraction/history`,
   );
 }

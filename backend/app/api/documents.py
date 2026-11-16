@@ -4,7 +4,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
+from app.models.extraction_edit import ExtractionEdit
+from app.schemas.extraction import ExtractionEditResponse
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import get_db
@@ -23,7 +26,10 @@ from app.schemas.approval import (
     DocumentApprovalResponse,
 )
 from app.schemas.document import DocumentResponse
-from app.schemas.extraction import ExtractionResultResponse
+from app.schemas.extraction import (
+    ExtractionCorrection,
+    ExtractionResultResponse,
+)
 from app.schemas.integration import IntegrationLogResponse
 from app.services.document_approval import (
     DocumentApprovalError,
@@ -36,6 +42,10 @@ from app.services.document_processing import (
 from app.services.erp_integration import (
     ERPIntegrationError,
     integrate_document,
+)
+from app.services.extraction_review import (
+    ExtractionReviewError,
+    correct_extraction,
 )
 from app.services.storage import (
     FileTooLargeError,
@@ -374,6 +384,90 @@ def get_document_extraction(
         )
 
     return extraction
+
+@router.get(
+    "/{document_id}/extraction/history",
+    response_model=list[ExtractionEditResponse],
+    status_code=status.HTTP_200_OK,
+)
+def get_document_extraction_history(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve correction history for an accessible document."""
+
+    _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
+
+    statement = (
+        select(ExtractionEdit)
+        .where(ExtractionEdit.document_id == document_id)
+        .order_by(ExtractionEdit.created_at.desc())
+    )
+
+    return db.scalars(statement).all()
+
+
+@router.patch(
+    "/{document_id}/extraction",
+    response_model=ExtractionResultResponse,
+    status_code=status.HTTP_200_OK,
+)
+def correct_document_extraction(
+    document_id: UUID,
+    corrections: ExtractionCorrection,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Correct extracted invoice fields and record an audit entry."""
+
+    _get_accessible_document(
+        db,
+        document_id,
+        current_user,
+    )
+
+    try:
+        extraction = correct_extraction(
+            db=db,
+            document_id=document_id,
+            corrections=corrections.model_dump(exclude_unset=True),
+            edited_by=current_user.email,
+        )
+
+        db.commit()
+        db.refresh(extraction)
+
+        return extraction
+
+    except ExtractionReviewError as exc:
+        db.rollback()
+
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if str(exc) in {
+                "Document not found.",
+                "No extraction result exists for this document.",
+            }
+            else status.HTTP_409_CONFLICT
+        )
+
+        raise HTTPException(
+            status_code=error_status,
+            detail=str(exc),
+        ) from exc
+
+    except SQLAlchemyError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A database error occurred while correcting the extraction.",
+        ) from exc
 
 
 @router.get(

@@ -35,6 +35,29 @@ class ExtractedInvoiceData(BaseModel):
     extracted_data: dict[str, Any] = Field(default_factory=dict)
 
 
+
+class ExtractionCorrection(BaseModel):
+    """Fields a reviewer may correct during invoice review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    supplier_name: str | None = Field(default=None, max_length=255)
+    invoice_number: str | None = Field(default=None, max_length=100)
+
+    invoice_date: date | None = None
+    due_date: date | None = None
+
+    currency: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]{3}$",
+        description="Three-letter ISO currency code.",
+    )
+
+    subtotal: Decimal | None = None
+    vat_amount: Decimal | None = None
+    total_amount: Decimal | None = None
+
+
 class ExtractionResultResponse(BaseModel):
     """API response representing a stored extraction result."""
 
@@ -62,4 +85,20 @@ class ExtractionResultResponse(BaseModel):
     extraction_provider: str | None = None
     extraction_model: str | None = None
 
+    created_at: datetime
+
+
+
+class ExtractionEditResponse(BaseModel):
+    """Audit record for a reviewer correction."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    extraction_id: uuid.UUID
+    edited_by: str
+    changed_fields: list[str]
+    before_data: dict[str, Any]
+    after_data: dict[str, Any]
     created_at: datetime
