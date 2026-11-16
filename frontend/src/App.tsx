@@ -261,7 +261,7 @@ function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (activeView === "integrations") {
+    if (activeView === "overview" || activeView === "integrations") {
       loadAllIntegrationHistory();
     }
   }, [activeView, documents]);
@@ -507,6 +507,59 @@ function Dashboard() {
     }
   };
 
+    const documentStatusMetrics = [
+      { label: "Uploaded", status: "uploaded" },
+      { label: "Processing", status: "processing" },
+      { label: "Extracted", status: "extracted" },
+      { label: "Pending Review", status: "pending_review" },
+      { label: "Approved", status: "approved" },
+      { label: "Rejected", status: "rejected" },
+      { label: "Integration Pending", status: "integration_pending" },
+      { label: "Integrated", status: "integrated" },
+      { label: "Failed", status: "failed" },
+    ].map((item) => ({
+      ...item,
+      count: documents.filter((doc) => doc.status === item.status).length,
+    }));
+
+    const integrationMetrics = [
+      { label: "Successful", status: "success" },
+      { label: "Failed", status: "failed" },
+      { label: "Pending", status: "pending" },
+      { label: "Processing", status: "processing" },
+    ].map((item) => ({
+      ...item,
+      count: allIntegrationHistory.filter(
+        (log) => log.status === item.status,
+      ).length,
+    }));
+
+    const totalIntegrations = allIntegrationHistory.length;
+
+    const successfulIntegrations = integrationMetrics.find(
+      (item) => item.status === "success",
+    )?.count ?? 0;
+
+    const failedIntegrations = integrationMetrics.find(
+      (item) => item.status === "failed",
+    )?.count ?? 0;
+
+    const documentCompletionRate =
+      documents.length === 0
+        ? 0
+        : Math.round(
+            (documents.filter(
+              (doc) => doc.status === "approved" || doc.status === "integrated",
+            ).length /
+              documents.length) *
+              100,
+          );
+
+    const integrationSuccessRate =
+      totalIntegrations === 0
+        ? 0
+        : Math.round((successfulIntegrations / totalIntegrations) * 100);
+
   const stats = [
     { label: "Total Documents", value: documents.length, icon: "▤" },
     {
@@ -679,6 +732,103 @@ function Dashboard() {
                 <div className="stat-description">{stat.icon} Live session data</div>
               </div>
             ))}
+          </section>
+        )}
+
+        {activeView === "overview" && (
+          <section className="analytics-grid">
+            <div className="content-card analytics-card">
+              <div className="section-heading">
+                <div>
+                  <h2 className="section-title">Document Status</h2>
+                  <p className="section-description">
+                    Distribution of all uploaded documents.
+                  </p>
+                </div>
+              </div>
+
+              <div className="analytics-list">
+                {documentStatusMetrics.map((item) => (
+                  <div className="analytics-row" key={item.status}>
+                    <div className="analytics-row-heading">
+                      <span>{item.label}</span>
+                      <strong>{item.count}</strong>
+                    </div>
+                    <div className="analytics-track">
+                      <div
+                        className="analytics-bar"
+                        style={{
+                          width: `${
+                            documents.length === 0
+                              ? 0
+                              : (item.count / documents.length) * 100
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="content-card analytics-card">
+              <div className="section-heading">
+                <div>
+                  <h2 className="section-title">ERP Integration Performance</h2>
+                  <p className="section-description">
+                    Integration attempts and their outcomes.
+                  </p>
+                </div>
+              </div>
+
+              <div className="integration-summary">
+                <div className="integration-metric">
+                  <span>Success Rate</span>
+                  <strong>{integrationSuccessRate}%</strong>
+                </div>
+                <div className="integration-metric">
+                  <span>Total Attempts</span>
+                  <strong>{totalIntegrations}</strong>
+                </div>
+              </div>
+
+              <div className="analytics-list">
+                {integrationMetrics.map((item) => (
+                  <div className="analytics-row" key={item.status}>
+                    <div className="analytics-row-heading">
+                      <span>{item.label}</span>
+                      <strong>{item.count}</strong>
+                    </div>
+                    <div className="analytics-track">
+                      <div
+                        className="analytics-bar"
+                        style={{
+                          width: `${
+                            totalIntegrations === 0
+                              ? 0
+                              : (item.count / totalIntegrations) * 100
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <p className="analytics-footnote">
+                {integrationHistoryLoading
+                  ? "Refreshing integration data..."
+                  : `${failedIntegrations} failed integration attempt(s).`}
+              </p>
+            </div>
+
+            <div className="content-card analytics-card analytics-rate-card">
+              <h2 className="section-title">Document Completion Rate</h2>
+              <div className="analytics-rate">{documentCompletionRate}%</div>
+              <p className="section-description">
+                Documents approved or successfully integrated.
+              </p>
+            </div>
           </section>
         )}
 
