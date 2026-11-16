@@ -37,3 +37,10 @@ class DocumentResponse(BaseModel):
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class DocumentListResponse(BaseModel):
+    items: list[DocumentResponse]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=100)
+    offset: int = Field(ge=0)

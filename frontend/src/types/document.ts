@@ -102,6 +102,22 @@ export interface DocumentResponse {
 }
 
 
+export interface DocumentListResponse {
+  items: DocumentResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DocumentListFilters {
+  search?: string;
+  status?: DocumentStatus;
+  document_type?: DocumentType;
+  date_from?: string;
+  date_to?: string;
+}
+
+
 export type ApprovalDecision = "approved" | "rejected";
 
 export interface DocumentApprovalCreate {

@@ -28,26 +28,61 @@ const mockDocument = {
   updated_at: "2026-11-15T10:00:00Z",
 };
 
+const mockDocumentList = {
+  items: [mockDocument],
+  total: 1,
+  limit: 20,
+  offset: 0,
+};
+
 describe("Document API services", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("retrieves documents with pagination parameters", async () => {
-    vi.mocked(apiRequest).mockResolvedValue([mockDocument]);
+    vi.mocked(apiRequest).mockResolvedValue({
+      ...mockDocumentList,
+      limit: 10,
+      offset: 5,
+    });
 
     const result = await getDocuments(10, 5);
 
-    expect(apiRequest).toHaveBeenCalledWith("/documents/?limit=10&offset=5");
-    expect(result).toEqual([mockDocument]);
+    expect(apiRequest).toHaveBeenCalledWith(
+      "/documents/?limit=10&offset=5",
+    );
+    expect(result).toEqual({
+      ...mockDocumentList,
+      limit: 10,
+      offset: 5,
+    });
   });
 
   it("uses default pagination parameters", async () => {
-    vi.mocked(apiRequest).mockResolvedValue([]);
+    vi.mocked(apiRequest).mockResolvedValue(mockDocumentList);
 
     await getDocuments();
 
-    expect(apiRequest).toHaveBeenCalledWith("/documents/?limit=20&offset=0");
+    expect(apiRequest).toHaveBeenCalledWith(
+      "/documents/?limit=20&offset=0",
+    );
+  });
+
+  it("retrieves documents using search and advanced filters", async () => {
+    vi.mocked(apiRequest).mockResolvedValue(mockDocumentList);
+
+    await getDocuments(20, 0, {
+      search: "Example Supplier",
+      status: "pending_review",
+      document_type: "invoice",
+      date_from: "2026-11-01",
+      date_to: "2026-11-15",
+    });
+
+    expect(apiRequest).toHaveBeenCalledWith(
+      "/documents/?limit=20&offset=0&search=Example+Supplier&status=pending_review&document_type=invoice&date_from=2026-11-01&date_to=2026-11-15",
+    );
   });
 
   it("uploads a document using FormData", async () => {

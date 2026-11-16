@@ -1,7 +1,8 @@
 from pathlib import Path
 from uuid import UUID
+from datetime import date
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -25,7 +26,12 @@ from app.schemas.approval import (
     DocumentApprovalCreate,
     DocumentApprovalResponse,
 )
-from app.schemas.document import DocumentResponse
+from app.schemas.document import (
+    DocumentListResponse,
+    DocumentResponse,
+    DocumentStatus,
+    DocumentType,
+)
 from app.schemas.extraction import (
     ExtractionCorrection,
     ExtractionResultResponse,
@@ -79,37 +85,50 @@ def _get_accessible_document(
     return document
 
 
+
 @router.get(
     "/",
-    response_model=list[DocumentResponse],
+    response_model=DocumentListResponse,
     status_code=status.HTTP_200_OK,
 )
 def get_documents(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None, max_length=255),
+    status_filter: DocumentStatus | None = Query(default=None, alias="status"),
+    document_type: DocumentType | None = Query(default=None),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Retrieve documents accessible to the authenticated user."""
+    """Retrieve filtered and paginated documents accessible to the user."""
 
-    if limit < 1 or limit > 100:
+    if date_from and date_to and date_from > date_to:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Limit must be between 1 and 100.",
+            detail="date_from cannot be later than date_to.",
         )
 
-    if offset < 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Offset cannot be negative.",
-        )
-
-    return list_documents(
+    documents, total = list_documents(
         db,
         limit=limit,
         offset=offset,
         current_user=current_user,
+        search=search,
+        status=status_filter.value if status_filter else None,
+        document_type=document_type.value if document_type else None,
+        date_from=date_from,
+        date_to=date_to,
     )
+
+    return DocumentListResponse(
+        items=documents,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
 
 
 @router.post(

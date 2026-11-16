@@ -80,19 +80,21 @@ def test_list_documents(db_session):
     create_test_document(db_session, "invoice2.pdf")
     create_test_document(db_session, "invoice3.pdf")
 
-    documents = list_documents(db_session)
+    documents, total = list_documents(db_session)
 
     assert len(documents) == 3
+    assert total == 3
 
 
 def test_list_documents_supports_pagination(db_session):
     for index in range(5):
         create_test_document(db_session, f"invoice{index}.pdf")
 
-    documents = list_documents(
+    documents, total = list_documents(
         db_session,
         limit=2,
         offset=1,
     )
 
     assert len(documents) == 2
+    assert total == 5

@@ -41,12 +41,28 @@ function Dashboard() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
+  const [documentPageItems, setDocumentPageItems] = useState<
+    DocumentResponse[]
+  >([]);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentResponse | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<
     "all" | DocumentResponse["status"]
   >("all");
+
+  const [documentTypeFilter, setDocumentTypeFilter] = useState<
+    "all" | DocumentResponse["document_type"]
+  >("all");
+
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalDocuments, setTotalDocuments] = useState(0);
+
+  const DOCUMENTS_PER_PAGE = 20;
 
   const [extraction, setExtraction] =
   useState<ExtractionResultResponse | null>(null);
@@ -222,7 +238,8 @@ function Dashboard() {
       setError("");
 
       try {
-        const existingDocuments = await getDocuments();
+        const existingResponse = await getDocuments(100, 0);
+        const existingDocuments = existingResponse.items;
 
         setDocuments(existingDocuments);
 
@@ -265,6 +282,72 @@ function Dashboard() {
       loadAllIntegrationHistory();
     }
   }, [activeView, documents]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(1);
+    }, 350);
+
+    return () => window.clearTimeout(timeout);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (activeView !== "documents") return;
+
+    let cancelled = false;
+
+    const loadDocumentPage = async () => {
+      setLoading(true);
+      setError("");
+
+      try {
+        const response = await getDocuments(
+          DOCUMENTS_PER_PAGE,
+          (currentPage - 1) * DOCUMENTS_PER_PAGE,
+          {
+            search: debouncedSearch,
+            status: statusFilter === "all" ? undefined : statusFilter,
+            document_type:
+              documentTypeFilter === "all" ? undefined : documentTypeFilter,
+            date_from: dateFrom || undefined,
+            date_to: dateTo || undefined,
+          },
+        );
+
+        if (!cancelled) {
+          setDocumentPageItems(response.items);
+          setTotalDocuments(response.total);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load documents.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadDocumentPage();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeView,
+    currentPage,
+    debouncedSearch,
+    statusFilter,
+    documentTypeFilter,
+    dateFrom,
+    dateTo,
+  ]);
 
   const handleUpload = async (file?: File) => {
     if (!file) return;
@@ -597,11 +680,11 @@ function Dashboard() {
   );
 
   const visibleDocuments =
-    activeView === "review"
-      ? pendingReviewDocuments
-      : activeView === "overview"
-        ? filteredDocuments.slice(0, 5)
-        : filteredDocuments;
+    activeView === "documents"
+      ? documentPageItems
+      : activeView === "review"
+        ? pendingReviewDocuments
+        : filteredDocuments.slice(0, 5);
 
   const getDocumentFilename = (documentId: string) =>
     documents.find((document) => document.id === documentId)
@@ -902,12 +985,12 @@ function Dashboard() {
                 </p>
               </div>
             </div>
-            {activeView !== "review" && (
+            {activeView === "documents" && (
               <div className="document-filters">
                 <input
                   type="search"
                   className="document-search"
-                  placeholder="Search by filename..."
+                  placeholder="Search filename, supplier, or invoice number..."
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
                 />
@@ -915,11 +998,12 @@ function Dashboard() {
                 <select
                   className="document-status-filter"
                   value={statusFilter}
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setStatusFilter(
                       event.target.value as "all" | DocumentResponse["status"],
-                    )
-                  }
+                    );
+                    setCurrentPage(1);
+                  }}
                 >
                   <option value="all">All statuses</option>
                   <option value="uploaded">Uploaded</option>
@@ -932,9 +1016,52 @@ function Dashboard() {
                   <option value="integrated">Integrated</option>
                   <option value="failed">Failed</option>
                 </select>
+
+                <select
+                  className="document-status-filter"
+                  value={documentTypeFilter}
+                  onChange={(event) => {
+                    setDocumentTypeFilter(
+                      event.target.value as "all" | DocumentResponse["document_type"],
+                    );
+                    setCurrentPage(1);
+                  }}
+                >
+                  <option value="all">All document types</option>
+                  <option value="invoice">Invoice</option>
+                  <option value="purchase_order">Purchase Order</option>
+                  <option value="contract">Contract</option>
+                  <option value="other">Other</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+
+                <input
+                  type="date"
+                  className="document-status-filter"
+                  aria-label="From date"
+                  value={dateFrom}
+                  onChange={(event) => {
+                    setDateFrom(event.target.value);
+                    setCurrentPage(1);
+                  }}
+                />
+
+                <input
+                  type="date"
+                  className="document-status-filter"
+                  aria-label="To date"
+                  value={dateTo}
+                  min={dateFrom || undefined}
+                  onChange={(event) => {
+                    setDateTo(event.target.value);
+                    setCurrentPage(1);
+                  }}
+                />
               </div>
             )}
-            {documents.length === 0 ? (
+            {(activeView === "documents"
+              ? totalDocuments === 0
+              : documents.length === 0) ? (
               <p className="empty-state">
                 No documents uploaded yet.
               </p>
@@ -967,6 +1094,43 @@ function Dashboard() {
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+            {activeView === "documents" && totalDocuments > 0 && (
+              <div className="document-pagination">
+                <span className="pagination-info">
+                  Showing {(currentPage - 1) * DOCUMENTS_PER_PAGE + 1}–
+                  {Math.min(currentPage * DOCUMENTS_PER_PAGE, totalDocuments)} of{" "}
+                  {totalDocuments} documents
+                </span>
+
+                <div className="pagination-actions">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    disabled={currentPage === 1 || loading}
+                    onClick={() => setCurrentPage((page) => page - 1)}
+                  >
+                    Previous
+                  </button>
+
+                  <span className="pagination-page">
+                    Page {currentPage} of{" "}
+                    {Math.ceil(totalDocuments / DOCUMENTS_PER_PAGE)}
+                  </span>
+
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    disabled={
+                      currentPage >= Math.ceil(totalDocuments / DOCUMENTS_PER_PAGE) ||
+                      loading
+                    }
+                    onClick={() => setCurrentPage((page) => page + 1)}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             )}
           </section>

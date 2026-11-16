@@ -1,11 +1,15 @@
-import { apiRequest } from "./apiClient";import type {
+import { apiRequest } from "./apiClient";
+import type {
   DocumentResponse,
+  DocumentListResponse,
   ExtractionResultResponse,
   DocumentApprovalCreate,
   DocumentApprovalResponse,
   IntegrationLogResponse,
   ExtractionCorrection,
   ExtractionEditResponse,
+  DocumentStatus,
+  DocumentType,
 } from "../types/document";
 
 import type {
@@ -35,13 +39,47 @@ export function getCurrentUser(): Promise<UserResponse> {
   return apiRequest<UserResponse>("/auth/me");
 }
 
-// Retrieve existing documents
+export interface DocumentFilters {
+  search?: string;
+  status?: DocumentStatus;
+  document_type?: DocumentType;
+  date_from?: string;
+  date_to?: string;
+}
+
+// Retrieve filtered and paginated documents
 export function getDocuments(
   limit = 20,
   offset = 0,
-): Promise<DocumentResponse[]> {
-  return apiRequest<DocumentResponse[]>(
-    `/documents/?limit=${limit}&offset=${offset}`,
+  filters: DocumentFilters = {},
+): Promise<DocumentListResponse> {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+
+  if (filters.search?.trim()) {
+    params.set("search", filters.search.trim());
+  }
+
+  if (filters.status) {
+    params.set("status", filters.status);
+  }
+
+  if (filters.document_type) {
+    params.set("document_type", filters.document_type);
+  }
+
+  if (filters.date_from) {
+    params.set("date_from", filters.date_from);
+  }
+
+  if (filters.date_to) {
+    params.set("date_to", filters.date_to);
+  }
+
+  return apiRequest<DocumentListResponse>(
+    `/documents/?${params.toString()}`,
   );
 }
 

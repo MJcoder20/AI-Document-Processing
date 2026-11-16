@@ -589,7 +589,12 @@ def test_users_can_only_access_their_own_documents(api_environment):
     response = client.get("/api/v1/documents/")
 
     assert response.status_code == 200
-    assert response.json() == []
+    data = response.json()
+
+    assert data["items"] == []
+    assert data["total"] == 0
+    assert data["limit"] == 20
+    assert data["offset"] == 0
 
     # User A can still access the document.
     client.headers["Authorization"] = f"Bearer {token_a}"
