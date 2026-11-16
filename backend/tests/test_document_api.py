@@ -946,3 +946,189 @@ def test_invalid_corrected_invoice_cannot_be_approved(
 
         document = db.get(Document, UUID(document_id))
         assert document.status == "pending_review"
+
+
+
+def upload_test_pdf(client, filename="security-test.pdf"):
+    response = client.post(
+        "/api/v1/documents/",
+        files={
+            "file": (
+                filename,
+                b"%PDF-1.4\nTest PDF content\n%%EOF",
+                "application/pdf",
+            )
+        },
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def test_owner_can_preview_pdf(api_environment):
+    client, _ = api_environment
+    document_id = upload_test_pdf(client)
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert "inline" in response.headers["content-disposition"]
+    assert response.content.startswith(b"%PDF-1.4")
+
+
+def test_owner_can_download_original_document(api_environment):
+    client, _ = api_environment
+    document_id = upload_test_pdf(client)
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/download"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert "attachment" in response.headers["content-disposition"]
+    assert "security-test.pdf" in response.headers["content-disposition"]
+    assert response.content.startswith(b"%PDF-1.4")
+
+
+def test_preview_rejects_non_pdf_document(api_environment):
+    client, _ = api_environment
+
+    upload_response = client.post(
+        "/api/v1/documents/",
+        files={
+            "file": (
+                "invoice.txt",
+                b"Invoice text",
+                "text/plain",
+            )
+        },
+    )
+    assert upload_response.status_code == 201
+
+    document_id = upload_response.json()["id"]
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    )
+
+    assert response.status_code == 415
+    assert response.json()["detail"] == (
+        "Inline preview is currently supported for PDF files only."
+    )
+
+
+def test_preview_returns_404_for_missing_document(api_environment):
+    client, _ = api_environment
+
+    response = client.get(
+        f"/api/v1/documents/{uuid4()}/preview"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Document not found."
+
+
+def test_download_returns_404_for_missing_document(api_environment):
+    client, _ = api_environment
+
+    response = client.get(
+        f"/api/v1/documents/{uuid4()}/download"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Document not found."
+
+
+def test_preview_returns_404_when_stored_file_is_missing(
+    api_environment,
+):
+    client, storage_dir = api_environment
+    document_id = upload_test_pdf(client)
+
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        document = db.get(Document, UUID(document_id))
+        stored_path = document.storage_path
+
+    # Remove the physical file but keep the database record.
+    from pathlib import Path
+    Path(stored_path).unlink()
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Document file not found."
+
+
+def test_preview_rejects_storage_path_outside_storage_root(
+    api_environment,
+    tmp_path,
+):
+    client, storage_dir = api_environment
+    document_id = upload_test_pdf(client)
+
+    # Create a file outside the configured document storage root.
+    outside_file = tmp_path / "outside-secret.pdf"
+    outside_file.write_bytes(b"%PDF-1.4\nSecret content")
+
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        document = db.get(Document, UUID(document_id))
+        document.storage_path = str(outside_file)
+        db.commit()
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Document file not found."
+
+
+def test_other_user_cannot_preview_or_download_document(
+    api_environment,
+):
+    client, _ = api_environment
+
+    owner_token, _ = create_test_user(
+        client,
+        "preview-owner@example.com",
+    )
+
+    client.headers["Authorization"] = f"Bearer {owner_token}"
+    document_id = upload_test_pdf(client, "private.pdf")
+
+    other_token, _ = create_test_user(
+        client,
+        "preview-other@example.com",
+    )
+
+    client.headers["Authorization"] = f"Bearer {other_token}"
+
+    preview_response = client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    )
+    download_response = client.get(
+        f"/api/v1/documents/{document_id}/download"
+    )
+
+    assert preview_response.status_code == 404
+    assert download_response.status_code == 404
+
+    # The owner can still access both endpoints.
+    client.headers["Authorization"] = f"Bearer {owner_token}"
+
+    assert client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    ).status_code == 200
+
+    assert client.get(
+        f"/api/v1/documents/{document_id}/download"
+    ).status_code == 200
