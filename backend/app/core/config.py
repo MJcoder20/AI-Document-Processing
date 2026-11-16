@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     service_bus_queue_name: str = "document-processing"
     service_bus_max_delivery_count: int = 5
 
+    local_worker_lease_seconds: int = 300
+
 
     # Database
     database_url: str = (

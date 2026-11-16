@@ -76,3 +76,13 @@ class OutboxMessage(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    lock_token: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
