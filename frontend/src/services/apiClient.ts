@@ -56,3 +56,31 @@ export async function apiRequest<T>(
 
   return response.json() as Promise<T>;
 }
+
+export async function apiRequestBlob(endpoint: string): Promise<Blob> {
+  const headers = new Headers();
+  const token = getAccessToken();
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    headers,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    const message =
+      errorData?.detail || `Request failed with status ${response.status}`;
+
+    if (response.status === 401 && token) {
+      clearAccessToken();
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
+
+    throw new Error(message);
+  }
+
+  return response.blob();
+}

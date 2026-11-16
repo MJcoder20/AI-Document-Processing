@@ -1,4 +1,4 @@
-import { apiRequest } from "./apiClient";
+import { apiRequest, apiRequestBlob } from "./apiClient";
 import type {
   DocumentResponse,
   DocumentListResponse,
@@ -38,6 +38,15 @@ export function registerUser(data: RegisterRequest): Promise<UserResponse> {
 export function getCurrentUser(): Promise<UserResponse> {
   return apiRequest<UserResponse>("/auth/me");
 }
+
+export function previewDocumentFile(documentId: string): Promise<Blob> {
+  return apiRequestBlob(`/documents/${documentId}/preview`);
+}
+
+export function downloadDocumentFile(documentId: string): Promise<Blob> {
+  return apiRequestBlob(`/documents/${documentId}/download`);
+}
+
 
 export interface DocumentFilters {
   search?: string;

@@ -3,6 +3,7 @@ from uuid import UUID
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -84,6 +85,26 @@ def _get_accessible_document(
 
     return document
 
+
+def _get_document_file_path(document: Document) -> Path:
+    """Resolve a stored file while preventing access outside storage."""
+
+    storage_root = Path(settings.document_storage_dir).resolve()
+    file_path = Path(document.storage_path).resolve()
+
+    if not file_path.is_relative_to(storage_root):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document file not found.",
+        )
+
+    if not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document file not found.",
+        )
+
+    return file_path
 
 
 @router.get(
@@ -375,6 +396,57 @@ def get_uploaded_document(
         current_user,
     )
 
+@router.get(
+    "/{document_id}/preview",
+    response_class=FileResponse,
+    status_code=status.HTTP_200_OK,
+)
+def preview_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Display an accessible PDF document inline."""
+
+    document = _get_accessible_document(db, document_id, current_user)
+
+    if Path(document.original_filename).suffix.lower() != ".pdf":
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Inline preview is currently supported for PDF files only.",
+        )
+
+    file_path = _get_document_file_path(document)
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=Path(document.original_filename).name,
+        content_disposition_type="inline",
+    )
+
+
+@router.get(
+    "/{document_id}/download",
+    response_class=FileResponse,
+    status_code=status.HTTP_200_OK,
+)
+def download_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download the original file of an accessible document."""
+
+    document = _get_accessible_document(db, document_id, current_user)
+    file_path = _get_document_file_path(document)
+
+    return FileResponse(
+        path=file_path,
+        media_type=document.content_type,
+        filename=Path(document.original_filename).name,
+        content_disposition_type="attachment",
+    )
 
 @router.get(
     "/{document_id}/extraction",

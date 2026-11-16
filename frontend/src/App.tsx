@@ -10,6 +10,8 @@ import {
   uploadDocument,
   correctDocumentExtraction,
   getExtractionHistory,
+  previewDocumentFile,
+  downloadDocumentFile,
 } from "./services/api";
 import type { DocumentResponse, ExtractionResultResponse, IntegrationLogResponse, ExtractionCorrection,
 ExtractionEditResponse} from "./types/document";
@@ -47,6 +49,10 @@ function Dashboard() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedDocument, setSelectedDocument] =
     useState<DocumentResponse | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+  const [downloadLoading, setDownloadLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<
     "all" | DocumentResponse["status"]
@@ -103,6 +109,35 @@ function Dashboard() {
       total_amount: data.total_amount?.toString() ?? "",
     });
   };
+
+  const handleDownload = async () => {
+    if (!selectedDocument) return;
+
+    setDownloadLoading(true);
+    setError("");
+
+    try {
+      const blob = await downloadDocumentFile(selectedDocument.id);
+      const url = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = selectedDocument.original_filename;
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not download document.",
+      );
+    } finally {
+      setDownloadLoading(false);
+    }
+  };
+
 
 
   const handleSaveCorrections = async () => {
@@ -348,6 +383,55 @@ function Dashboard() {
     dateFrom,
     dateTo,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    setPreviewUrl(null);
+    setPreviewError("");
+
+    if (
+      !selectedDocument ||
+      !selectedDocument.original_filename.toLowerCase().endsWith(".pdf")
+    ) {
+      setPreviewLoading(false);
+      return;
+    }
+
+    const loadPreview = async () => {
+      setPreviewLoading(true);
+
+      try {
+        const blob = await previewDocumentFile(selectedDocument.id);
+
+        if (cancelled) return;
+
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+      } catch (err) {
+        if (!cancelled) {
+          setPreviewError(
+            err instanceof Error ? err.message : "Could not load PDF preview.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setPreviewLoading(false);
+        }
+      }
+    };
+
+    void loadPreview();
+
+    return () => {
+      cancelled = true;
+
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [selectedDocument?.id, selectedDocument?.original_filename]);
 
   const handleUpload = async (file?: File) => {
     if (!file) return;
@@ -678,6 +762,30 @@ function Dashboard() {
   const pendingReviewDocuments = documents.filter(
     (document) => document.status === "pending_review",
   );
+
+  const detailNavigationDocuments =
+    activeView === "review"
+      ? pendingReviewDocuments
+      : activeView === "documents"
+        ? documentPageItems
+        : documents;
+
+  const selectedDocumentIndex = selectedDocument
+    ? detailNavigationDocuments.findIndex(
+        (document) => document.id === selectedDocument.id,
+      )
+    : -1;
+
+  const previousDocument =
+    selectedDocumentIndex > 0
+      ? detailNavigationDocuments[selectedDocumentIndex - 1]
+      : null;
+
+  const nextDocument =
+    selectedDocumentIndex >= 0 &&
+    selectedDocumentIndex < detailNavigationDocuments.length - 1
+      ? detailNavigationDocuments[selectedDocumentIndex + 1]
+      : null;
 
   const visibleDocuments =
     activeView === "documents"
@@ -1058,7 +1166,37 @@ function Dashboard() {
                   }}
                 />
               </div>
+
             )}
+            <div className="detail-navigation">
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  disabled={!previousDocument || loading}
+                  onClick={() => {
+                    if (previousDocument) void handleSelectDocument(previousDocument);
+                  }}
+                >
+                  ← Previous
+                </button>
+
+                <span>
+                  {selectedDocumentIndex >= 0
+                    ? `${selectedDocumentIndex + 1} of ${detailNavigationDocuments.length}`
+                    : "Document details"}
+                </span>
+
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  disabled={!nextDocument || loading}
+                  onClick={() => {
+                    if (nextDocument) void handleSelectDocument(nextDocument);
+                  }}
+                >
+                  Next →
+                </button>
+            </div>
             {(activeView === "documents"
               ? totalDocuments === 0
               : documents.length === 0) ? (
@@ -1159,6 +1297,49 @@ function Dashboard() {
             <p className="detail-text">
               Size: {(selectedDocument.file_size / 1024).toFixed(1)} KB
             </p>
+            <p className="detail-text">
+              Uploaded: {new Date(selectedDocument.created_at).toLocaleString()}
+            </p>
+
+            <div className="document-file-actions">
+              <button
+                className="btn btn-primary"
+                type="button"
+                disabled={downloadLoading}
+                onClick={handleDownload}
+              >
+                {downloadLoading ? "Downloading..." : "Download Original"}
+              </button>
+            </div>
+            {selectedDocument.original_filename.toLowerCase().endsWith(".pdf") && (
+              <section className="document-preview-section">
+                <div className="section-heading">
+                  <div>
+                    <h3 className="section-title">Document Preview</h3>
+                    <p className="section-description">
+                      Preview the original PDF without leaving the dashboard.
+                    </p>
+                  </div>
+                </div>
+
+                {previewLoading && (
+                  <p className="empty-state">Loading PDF preview...</p>
+                )}
+
+                {previewError && (
+                  <p className="error-message">{previewError}</p>
+                )}
+
+                {!previewLoading && !previewError && previewUrl && (
+                  <iframe
+                    className="document-preview-frame"
+                    src={previewUrl}
+                    title={`Preview of ${selectedDocument.original_filename}`}
+                    referrerPolicy="no-referrer"
+                  />
+                )}
+              </section>
+            )}
             {extraction && (
               <div className="extraction-section">
                 <h3>AI Extraction Results</h3>
