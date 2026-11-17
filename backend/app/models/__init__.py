@@ -7,7 +7,7 @@ from app.models.erp_invoice import ERPInvoice
 from app.models.user import User
 from app.models.login_attempt import LoginAttempt
 from app.models.extraction_edit import ExtractionEdit
-
+from app.models.worker_execution import WorkerExecution
 
 __all__ = [
     "Document",
@@ -19,4 +19,5 @@ __all__ = [
     "User",
     "LoginAttempt",
     "ExtractionEdit",
+    "WorkerExecution",
 ]

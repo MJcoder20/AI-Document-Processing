@@ -1,8 +1,8 @@
-
 import logging
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -14,6 +14,7 @@ from app.core.request_context import (
 from app.models.document import Document
 from app.models.extraction_result import ExtractionResult
 from app.models.outbox_message import OutboxMessage
+from app.models.worker_execution import WorkerExecution
 from app.repositories.outbox import (
     claim_next_outbox_message,
     complete_outbox_claim,
@@ -50,6 +51,44 @@ def _document_was_already_processed(
     return extraction is not None
 
 
+def _finish_execution(
+    db: Session,
+    execution_id: UUID,
+    *,
+    outcome: str,
+    started_at: datetime,
+    error_message: str | None = None,
+) -> None:
+    """Persist the final outcome of a worker execution."""
+
+    finished_at = datetime.now(timezone.utc)
+
+    execution = db.get(WorkerExecution, execution_id)
+
+    if execution is None:
+        logger.error(
+            "Worker execution record %s was not found",
+            execution_id,
+        )
+        return
+
+    execution.outcome = outcome
+    execution.finished_at = finished_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    else:
+        started_at = started_at.astimezone(timezone.utc)
+    execution.duration_ms = max(
+        0,
+        int((finished_at - started_at).total_seconds() * 1000),
+    )
+    execution.error_message = (
+        error_message[:2000] if error_message else None
+    )
+
+    db.commit()
+
+
 def process_pending_outbox_messages(
     db: Session,
     *,
@@ -74,6 +113,46 @@ def process_pending_outbox_messages(
             recovered,
         )
 
+    # Close execution records whose messages had expired leases.
+    stale_executions = db.execute(
+        select(WorkerExecution, OutboxMessage.status)
+        .join(
+            OutboxMessage,
+            WorkerExecution.message_id == OutboxMessage.id,
+        )
+        .where(
+            WorkerExecution.outcome == "active",
+            or_(
+                OutboxMessage.status != "processing",
+                and_(
+                    OutboxMessage.status == "processing",
+                    WorkerExecution.lock_token.is_distinct_from(
+                        OutboxMessage.lock_token
+                    ),
+                ),
+            ),
+        )
+    ).all()
+
+    for execution, message_status in stale_executions:
+        outcome = (
+            "processed"
+            if message_status == "processed"
+            else "interrupted"
+        )
+
+        _finish_execution(
+            db,
+            execution.id,
+            outcome=outcome,
+            started_at=execution.started_at,
+            error_message=(
+                None
+                if outcome == "processed"
+                else "Worker lease expired or was replaced."
+            ),
+        )
+
     for _ in range(limit):
         claim = claim_next_outbox_message(db)
 
@@ -87,10 +166,22 @@ def process_pending_outbox_messages(
         if message is None or message.lock_token != lock_token:
             continue
 
-        # Restore the original request ID, or generate one for
-        # legacy messages that do not contain a valid request ID.
-        payload = message.payload or {}
-        original_request_id = payload.get("request_id")
+        started_at = datetime.now(timezone.utc)
+
+        execution = WorkerExecution(
+            message_id=message_id,
+            lock_token=lock_token,
+            outcome="active",
+            started_at=started_at,
+        )
+
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+
+        execution_id = execution.id
+
+        original_request_id = (message.payload or {}).get("request_id")
 
         try:
             correlation_id = str(UUID(str(original_request_id)))
@@ -101,13 +192,16 @@ def process_pending_outbox_messages(
         message_token = message_id_context.set(str(message_id))
         document_token = document_id_context.set("-")
 
+        outcome = "interrupted"
+        error_message = None
+
         try:
             if message.message_type != "process_document":
                 raise ValueError(
                     f"Unsupported message type: {message.message_type}"
                 )
 
-            document_id = UUID(payload["document_id"])
+            document_id = UUID(message.payload["document_id"])
             document_id_context.set(str(document_id))
 
             logger.info("outbox.message.processing")
@@ -127,41 +221,63 @@ def process_pending_outbox_messages(
 
             if completed:
                 results["processed"] += 1
+                outcome = "processed"
                 logger.info("outbox.message.completed")
             else:
+                outcome = "lease_lost"
                 logger.warning(
-                    "Lost lease for outbox message %s; "
-                    "another worker may have reclaimed it",
+                    "Lost lease for outbox message %s",
                     message_id,
                 )
 
         except Exception as exc:
             db.rollback()
 
+            error_message = str(exc)
+
             logger.exception("outbox.message.failed")
 
-            outcome = fail_outbox_claim(
+            failure_outcome = fail_outbox_claim(
                 db,
                 message_id=message_id,
                 lock_token=lock_token,
-                error_message=str(exc),
+                error_message=error_message,
             )
 
-            if outcome == "retried":
+            if failure_outcome == "retried":
                 results["retried"] += 1
+                outcome = "retried"
                 logger.warning("outbox.message.retry_scheduled")
-            elif outcome == "failed":
+
+            elif failure_outcome == "failed":
                 results["failed"] += 1
+                outcome = "failed"
                 logger.error("outbox.message.permanently_failed")
+
             else:
+                outcome = "lease_lost"
                 logger.warning(
-                    "Could not update outbox message %s because "
-                    "the worker no longer owns its lease",
+                    "Could not update outbox message %s; "
+                    "worker no longer owns its lease",
                     message_id,
                 )
 
         finally:
-            # Prevent context from leaking into the next message.
+            try:
+                _finish_execution(
+                    db,
+                    execution_id,
+                    outcome=outcome,
+                    started_at=started_at,
+                    error_message=error_message,
+                )
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Could not finalize worker execution %s",
+                    execution_id,
+                )
+
             document_id_context.reset(document_token)
             message_id_context.reset(message_token)
             request_id_context.reset(request_token)

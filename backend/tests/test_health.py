@@ -188,3 +188,76 @@ def test_operational_metrics_handles_database_failure(health_client):
 
     assert response.status_code == 503
     assert response.json()["status"] == "unavailable"
+
+
+
+def test_worker_metrics_returns_database_statistics(health_client):
+    class FakeDB:
+        def __init__(self):
+            self.call_count = 0
+
+        def execute(self, query):
+            self.call_count += 1
+
+            if self.call_count == 1:
+                return SimpleNamespace(
+                    all=lambda: [
+                        ("processed", 2),
+                        ("retried", 1),
+                        ("failed", 1),
+                        ("lease_lost", 1),
+                        ("interrupted", 1),
+                        ("active", 1),
+                    ]
+                )
+
+            return SimpleNamespace(
+                one=lambda: (1250.5, 100, 3000)
+            )
+
+    def override_get_db():
+        yield FakeDB()
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    response = health_client.get("/health/worker/metrics")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "healthy",
+        "worker": {
+            "total_attempts": 7,
+            "active_attempts": 1,
+            "completed_attempts": 6,
+            "processed": 2,
+            "retried": 1,
+            "failed": 1,
+            "lease_lost": 1,
+            "interrupted": 1,
+            "recovered_leases": 1,
+            "duration_ms": {
+                "average": 1250.5,
+                "minimum": 100,
+                "maximum": 3000,
+            },
+        },
+    }
+
+
+def test_worker_metrics_when_database_is_unavailable(health_client):
+    class FakeDB:
+        def execute(self, query):
+            raise SQLAlchemyError("Database connection failed")
+
+    def override_get_db():
+        yield FakeDB()
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    response = health_client.get("/health/worker/metrics")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "unavailable",
+        "error": "Could not retrieve worker metrics",
+    }

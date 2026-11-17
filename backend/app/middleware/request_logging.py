@@ -8,9 +8,18 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from app.core.request_context import request_id_context
-
+from app.core.request_metrics import request_metrics
 
 logger = logging.getLogger(__name__)
+
+METRICS_EXCLUDED_PATHS = {
+    "/health",
+    "/health/live",
+    "/health/ready",
+    "/health/worker",
+    "/health/metrics",
+    "/health/requests",
+}
 
 REQUEST_ID_PATTERN = re.compile(
     r"^[a-fA-F0-9]{8}-"
@@ -38,6 +47,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         start_time = time.perf_counter()
         status_code = 500
+        track_metrics = request.url.path not in METRICS_EXCLUDED_PATHS
+
+        if track_metrics:
+            request_metrics.start_request()
 
         try:
             response = await call_next(request)
@@ -61,6 +74,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 (time.perf_counter() - start_time) * 1000,
                 2,
             )
+            if track_metrics:
+                request_metrics.finish_request(
+                    method=request.method,
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                )
 
             logger.info(
                 "request.completed",

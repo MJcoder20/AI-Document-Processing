@@ -4,6 +4,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.documents import router as documents_router
+from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.middleware.request_logging import RequestLoggingMiddleware
@@ -52,7 +53,7 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
 )
 app.add_middleware(RequestLoggingMiddleware)
-
+app.include_router(health_router)
 app.include_router(
     documents_router,
     prefix=settings.api_v1_prefix,

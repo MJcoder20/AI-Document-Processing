@@ -3,13 +3,15 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, case
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.core.request_metrics import request_metrics
 from app.models.document import Document
 from app.models.outbox_message import OutboxMessage
+from app.models.worker_execution import WorkerExecution
 
 
 router = APIRouter(tags=["Health"])
@@ -161,5 +163,74 @@ async def operational_metrics(db: Session = Depends(get_db)):
             content={
                 "status": "unavailable",
                 "error": "Could not retrieve operational metrics",
+            },
+        )
+
+@router.get("/health/requests")
+async def request_metrics_health():
+    return {
+        "status": "healthy",
+        "requests": request_metrics.snapshot(),
+    }
+
+
+@router.get("/health/worker/metrics")
+async def worker_metrics_health(db: Session = Depends(get_db)):
+    try:
+        outcome_rows = db.execute(
+            select(
+                WorkerExecution.outcome,
+                func.count(WorkerExecution.id),
+            ).group_by(WorkerExecution.outcome)
+        ).all()
+
+        outcomes = {
+            outcome: count
+            for outcome, count in outcome_rows
+        }
+
+        duration_stats = db.execute(
+            select(
+                func.avg(WorkerExecution.duration_ms),
+                func.min(WorkerExecution.duration_ms),
+                func.max(WorkerExecution.duration_ms),
+            ).where(
+                WorkerExecution.duration_ms.is_not(None)
+            )
+        ).one()
+
+        total_attempts = sum(outcomes.values())
+        active_attempts = outcomes.get("active", 0)
+        completed_attempts = total_attempts - active_attempts
+
+        average, minimum, maximum = duration_stats
+
+        return {
+            "status": "healthy",
+            "worker": {
+                "total_attempts": total_attempts,
+                "active_attempts": active_attempts,
+                "completed_attempts": completed_attempts,
+                "processed": outcomes.get("processed", 0),
+                "retried": outcomes.get("retried", 0),
+                "failed": outcomes.get("failed", 0),
+                "lease_lost": outcomes.get("lease_lost", 0),
+                "interrupted": outcomes.get("interrupted", 0),
+                "recovered_leases": outcomes.get("interrupted", 0),
+                "duration_ms": {
+                    "average": round(float(average), 2)
+                    if average is not None else 0.0,
+                    "minimum": minimum,
+                    "maximum": maximum or 0,
+                },
+            },
+        }
+
+    except SQLAlchemyError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "error": "Could not retrieve worker metrics",
             },
         )

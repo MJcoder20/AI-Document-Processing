@@ -16,6 +16,7 @@ from app.db.base import Base
 from app.models.document import Document
 from app.models.extraction_result import ExtractionResult
 from app.models.outbox_message import OutboxMessage
+from app.models.worker_execution import WorkerExecution
 from app.repositories.outbox import (
     claim_next_outbox_message,
     complete_outbox_claim,
@@ -522,3 +523,110 @@ def test_worker_generates_request_id_for_legacy_message(
     assert captured_request_ids[0] != "-"
 
     assert request_id_context.get() == "-"
+
+
+
+def test_recovery_does_not_interrupt_new_worker_attempt(
+    db_session,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        settings,
+        "local_worker_lease_seconds",
+        300,
+    )
+
+    document = create_document(db_session)
+
+    old_token = str(uuid4())
+
+    message = create_message(
+        db_session,
+        document,
+        status="processing",
+        attempt_count=1,
+    )
+
+    message.locked_at = datetime.now(timezone.utc) - timedelta(
+        seconds=600
+    )
+    message.lock_token = old_token
+
+    old_execution = WorkerExecution(
+        message_id=message.id,
+        lock_token=old_token,
+        outcome="active",
+        started_at=datetime.now(timezone.utc) - timedelta(
+            seconds=600
+        ),
+    )
+
+    db_session.add(old_execution)
+    db_session.commit()
+    db_session.refresh(old_execution)
+
+    original_recovery = (
+        local_outbox_processor.recover_expired_outbox_messages
+    )
+
+    new_execution_data = {}
+
+    def recover_and_reclaim(db):
+        recovered = original_recovery(db)
+
+        # Simulate another worker claiming the recovered message.
+        claim = claim_next_outbox_message(db)
+
+        assert claim is not None
+
+        message_id, new_token = claim
+
+        new_execution = WorkerExecution(
+            message_id=message_id,
+            lock_token=new_token,
+            outcome="active",
+            started_at=datetime.now(timezone.utc),
+        )
+
+        db.add(new_execution)
+        db.commit()
+        db.refresh(new_execution)
+
+        new_execution_data["id"] = new_execution.id
+        new_execution_data["token"] = new_token
+
+        return recovered
+
+    monkeypatch.setattr(
+        local_outbox_processor,
+        "recover_expired_outbox_messages",
+        recover_and_reclaim,
+    )
+
+    results = local_outbox_processor.process_pending_outbox_messages(
+        db_session
+    )
+
+    db_session.refresh(old_execution)
+    new_execution = db_session.get(
+        WorkerExecution,
+        new_execution_data["id"],
+    )
+    db_session.refresh(message)
+
+    assert results == {
+        "processed": 0,
+        "retried": 0,
+        "failed": 0,
+    }
+
+    assert old_execution.outcome == "interrupted"
+    assert old_execution.finished_at is not None
+    assert old_execution.duration_ms is not None
+
+    assert new_execution.outcome == "active"
+    assert new_execution.finished_at is None
+
+    assert message.status == "processing"
+    assert message.lock_token == new_execution_data["token"]
+    assert message.lock_token != old_token
