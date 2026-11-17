@@ -219,3 +219,24 @@ def test_process_failed_document_can_be_retried(
     assert document.error_message is None
     assert result.document_id == document.id
     assert result.supplier_name == "ABC Technologies"
+
+
+def test_process_document_records_mock_provider_metadata(
+    db_session,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.document_processing.settings.ai_provider",
+        "mock",
+    )
+
+    document = create_test_document(
+        db_session,
+        tmp_path,
+    )
+
+    result = process_document(db_session, document.id)
+
+    assert result.extraction_provider == "mock"
+    assert result.extraction_model == "mock-regex-v1"

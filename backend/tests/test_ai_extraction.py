@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from app.services.ai_extraction import extract_invoice_data
 import json
 
@@ -120,3 +122,68 @@ def test_extract_invoice_data_handles_double_nested_invoice_fields(monkeypatch):
     assert str(invoice.subtotal) == "800.0"
     assert str(invoice.vat_amount) == "120.0"
     assert str(invoice.total_amount) == "920.0"
+
+
+def test_mock_provider_extracts_labeled_invoice_fields(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.ai_extraction.settings.ai_provider",
+        "mock",
+    )
+
+    invoice = extract_invoice_data(
+        document_text=(
+            "Supplier: ABC Technologies\n"
+            "Invoice: INV-2026-105\n"
+            "Invoice Date: 2026-11-12\n"
+            "Due Date: 2026-12-12\n"
+            "Currency: USD\n"
+            "Subtotal: 500.00\n"
+            "VAT: 75.00\n"
+            "Total: 575.00\n"
+        )
+    )
+
+    assert invoice.supplier_name == "ABC Technologies"
+    assert invoice.invoice_number == "INV-2026-105"
+    assert str(invoice.invoice_date) == "2026-11-12"
+    assert str(invoice.due_date) == "2026-12-12"
+    assert invoice.currency == "USD"
+    assert invoice.subtotal == Decimal("500.00")
+    assert invoice.vat_amount == Decimal("75.00")
+    assert invoice.total_amount == Decimal("575.00")
+    assert invoice.confidence_score is None
+
+
+def test_mock_provider_does_not_invent_missing_fields(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.ai_extraction.settings.ai_provider",
+        "mock",
+    )
+
+    invoice = extract_invoice_data(
+        document_text="Supplier: ABC Technologies"
+    )
+
+    assert invoice.supplier_name == "ABC Technologies"
+    assert invoice.invoice_number is None
+    assert invoice.invoice_date is None
+    assert invoice.currency is None
+    assert invoice.total_amount is None
+    assert invoice.confidence_score is None
+
+
+def test_extract_invoice_data_rejects_empty_content(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.ai_extraction.settings.ai_provider",
+        "mock",
+    )
+
+    from app.services.ai_extraction import AIExtractionError
+
+    import pytest
+
+    with pytest.raises(
+        AIExtractionError,
+        match="no extractable content",
+    ):
+        extract_invoice_data(document_text="")

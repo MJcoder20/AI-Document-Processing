@@ -15,6 +15,18 @@ from app.services.invoice_validation import validate_invoice
 
 logger = logging.getLogger(__name__)
 
+MOCK_EXTRACTION_MODEL = "mock-regex-v1"
+
+
+def get_extraction_model() -> str:
+    if settings.ai_provider == "mock":
+        return MOCK_EXTRACTION_MODEL
+
+    if settings.ai_provider == "ollama":
+        return settings.ollama_model
+
+    return "unknown"
+
 
 class DocumentProcessingError(Exception):
     """Raised when document processing fails."""
@@ -83,7 +95,7 @@ def process_document(
                 "invoice": invoice_data.model_dump(mode="json"),
             },
             extraction_provider=settings.ai_provider,
-            extraction_model=settings.ollama_model,
+            extraction_model=get_extraction_model(),
         )
 
         db.add(extraction_result)
@@ -110,9 +122,11 @@ def process_document(
         db.refresh(extraction_result)
 
         logger.info(
-            "Document %s processed using %s. Validation status: %s",
+            "Document %s processed using provider=%s, model=%s. "
+            "Validation status: %s",
             document_id,
-            settings.ollama_model,
+            settings.ai_provider,
+            get_extraction_model(),
             validation_result["status"],
         )
 

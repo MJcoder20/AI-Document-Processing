@@ -1,6 +1,8 @@
-
+import re
 import json
 import logging
+from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -15,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 class AIExtractionError(Exception):
     """Raised when AI invoice extraction fails."""
-
 
 
 SYSTEM_PROMPT = """
@@ -64,7 +65,89 @@ ACCURACY RULES:
 - Set extracted_data to an empty JSON object.
 """
 
+def _extract_mock_invoice_data(
+    document_text: str,
+    tables: list[Any] | None = None,
+) -> ExtractedInvoiceData:
+    """Extract clearly labeled invoice fields using deterministic rules."""
 
+    content = document_text or ""
+
+    if tables:
+        content += "\n" + "\n".join(
+            str(row)
+            for table in tables
+            for row in (table if isinstance(table, list) else [table])
+        )
+
+    def find_value(pattern: str) -> str | None:
+        match = re.search(pattern, content, re.IGNORECASE | re.MULTILINE)
+        return match.group(1).strip() if match else None
+
+    def find_amount(pattern: str) -> Decimal | None:
+        value = find_value(pattern)
+        if not value:
+            return None
+
+        try:
+            return Decimal(value.replace(",", ""))
+        except (ValueError, ArithmeticError):
+            return None
+
+    supplier_name = find_value(
+        r"^(?:supplier|vendor|seller)\s*:\s*(.+)$"
+    )
+
+    invoice_number = find_value(
+        r"^(?:invoice\s*(?:number|no\.?|#)|invoice)\s*:\s*(.+)$"
+    )
+
+    invoice_date = find_value(
+        r"^invoice\s*date\s*:\s*(\d{4}-\d{2}-\d{2})$"
+    )
+
+    due_date = find_value(
+        r"^due\s*date\s*:\s*(\d{4}-\d{2}-\d{2})$"
+    )
+
+    currency = find_value(
+        r"^currency\s*:\s*([A-Z]{3})$"
+    )
+
+    subtotal = find_amount(
+        r"^subtotal\s*:\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)$"
+    )
+
+    vat_amount = find_amount(
+        r"^(?:vat|tax)\s*:\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)$"
+    )
+
+    total_amount = find_amount(
+        r"^(?:total|total\s*amount)\s*:\s*[$€£]?\s*([\d,]+(?:\.\d{1,2})?)$"
+    )
+
+
+    def parse_date(value: str | None) -> date | None:
+        if not value:
+            return None
+
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+
+    return ExtractedInvoiceData(
+        supplier_name=supplier_name,
+        invoice_number=invoice_number,
+        invoice_date=parse_date(invoice_date),
+        due_date=parse_date(due_date),
+        currency=currency,
+        subtotal=subtotal,
+        vat_amount=vat_amount,
+        total_amount=total_amount,
+        confidence_score=None,
+        extracted_data={},
+    )
 
 def extract_invoice_data(
     document_text: str,
@@ -83,13 +166,16 @@ def extract_invoice_data(
     Raises:
         AIExtractionError: If the AI request or response validation fails.
     """
+    if not document_text.strip() and not tables:
+        raise AIExtractionError("The document contains no extractable content.")
+
+    if settings.ai_provider == "mock":
+        return _extract_mock_invoice_data(document_text, tables)
+
     if settings.ai_provider != "ollama":
         raise AIExtractionError(
             f"Unsupported AI provider for this service: {settings.ai_provider}"
         )
-
-    if not document_text.strip() and not tables:
-        raise AIExtractionError("The document contains no extractable content.")
 
     document_content = {
         "text": document_text,
