@@ -6,7 +6,9 @@ from uuid import uuid4
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
+from starlette.concurrency import run_in_threadpool
 
+from app.services.error_tracking import record_error_event
 from app.core.request_context import request_id_context
 from app.core.request_metrics import request_metrics
 
@@ -59,14 +61,39 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
             return response
 
-        except Exception:
+
+        except Exception as exc:
+
             logger.exception(
+
                 "request.failed",
+
                 extra={
+
                     "method": request.method,
+
                     "path": request.url.path,
+
                 },
+
             )
+
+            await run_in_threadpool(
+
+                record_error_event,
+
+                exc,
+
+                category="application",
+
+                severity="error",
+
+                endpoint=request.url.path,
+
+                method=request.method,
+
+            )
+
             raise
 
         finally:

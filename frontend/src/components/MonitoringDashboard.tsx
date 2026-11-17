@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useState } from "react";
 import {
   getLiveness,
@@ -15,6 +14,8 @@ import {
   type WorkerMetricsResponse,
 } from "../services/monitoring";
 import "./MonitoringDashboard.css";
+import ErrorManagement from "./ErrorManagement";
+
 
 type MonitoringData = {
   liveness: LivenessResponse;
@@ -332,6 +333,7 @@ export default function MonitoringDashboard() {
           </div>
         </div>
       </section>
+      <ErrorManagement />
     </div>
   );
 }

@@ -630,3 +630,73 @@ def test_recovery_does_not_interrupt_new_worker_attempt(
     assert message.status == "processing"
     assert message.lock_token == new_execution_data["token"]
     assert message.lock_token != old_token
+
+
+
+def test_worker_records_processing_error_with_correlation_context(
+    db_session,
+    monkeypatch,
+):
+    document = create_document(db_session)
+    request_id = str(uuid4())
+
+    message = OutboxMessage(
+        document_id=document.id,
+        message_type="process_document",
+        payload={
+            "document_id": str(document.id),
+            "request_id": request_id,
+        },
+        status="pending",
+    )
+    db_session.add(message)
+    db_session.commit()
+
+    def fake_process_document(*args, **kwargs):
+        raise RuntimeError("Worker extraction test failure")
+
+    captured = {}
+
+    def fake_record_error_event(exc, **kwargs):
+        captured["exception"] = exc
+        captured["kwargs"] = kwargs
+        captured["request_id"] = request_id_context.get()
+        captured["message_id"] = message_id_context.get()
+        captured["document_id"] = document_id_context.get()
+
+    monkeypatch.setattr(
+        local_outbox_processor,
+        "process_document",
+        fake_process_document,
+    )
+    monkeypatch.setattr(
+        local_outbox_processor,
+        "record_error_event",
+        fake_record_error_event,
+    )
+
+    results = local_outbox_processor.process_pending_outbox_messages(
+        db_session
+    )
+
+    assert isinstance(captured["exception"], RuntimeError)
+    assert str(captured["exception"]) == "Worker extraction test failure"
+
+    assert captured["kwargs"]["category"] == "worker"
+    assert captured["kwargs"]["severity"] == "error"
+    assert captured["kwargs"]["endpoint"] == "local_outbox_processor"
+    assert captured["kwargs"]["method"] == "WORKER"
+
+    assert captured["request_id"] == request_id
+    assert captured["message_id"] == str(message.id)
+    assert captured["document_id"] == str(document.id)
+
+    assert results == {
+        "processed": 0,
+        "retried": 1,
+        "failed": 0,
+    }
+
+    assert request_id_context.get() == "-"
+    assert message_id_context.get() == "-"
+    assert document_id_context.get() == "-"

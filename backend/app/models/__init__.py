@@ -8,6 +8,7 @@ from app.models.user import User
 from app.models.login_attempt import LoginAttempt
 from app.models.extraction_edit import ExtractionEdit
 from app.models.worker_execution import WorkerExecution
+from app.models.error_event import ErrorEvent
 
 __all__ = [
     "Document",
@@ -20,4 +21,5 @@ __all__ = [
     "LoginAttempt",
     "ExtractionEdit",
     "WorkerExecution",
+    "ErrorEvent",
 ]

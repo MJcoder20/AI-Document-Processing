@@ -22,7 +22,7 @@ from app.repositories.outbox import (
     recover_expired_outbox_messages,
 )
 from app.services.document_processing import process_document
-
+from app.services.error_tracking import record_error_event
 
 logger = logging.getLogger(__name__)
 
@@ -230,18 +230,43 @@ def process_pending_outbox_messages(
                     message_id,
                 )
 
+
         except Exception as exc:
+
             db.rollback()
 
             error_message = str(exc)
 
             logger.exception("outbox.message.failed")
 
+            # Persist the exception independently of the worker transaction.
+
+            # Request/message/document context is already set above.
+
+            record_error_event(
+
+                exc,
+
+                category="worker",
+
+                severity="error",
+
+                endpoint="local_outbox_processor",
+
+                method="WORKER",
+
+            )
+
             failure_outcome = fail_outbox_claim(
+
                 db,
+
                 message_id=message_id,
+
                 lock_token=lock_token,
+
                 error_message=error_message,
+
             )
 
             if failure_outcome == "retried":

@@ -1,5 +1,11 @@
 import json
 import logging
+from unittest.mock import patch
+
+from fastapi import FastAPI, HTTPException
+from starlette.testclient import TestClient
+
+from app.middleware.request_logging import RequestLoggingMiddleware
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -103,3 +109,36 @@ def test_json_formatter_omits_empty_background_context():
     assert payload["request_id"] == "-"
     assert "message_id" not in payload
     assert "document_id" not in payload
+
+
+def test_unhandled_request_exception_records_error_event():
+    test_app = FastAPI()
+    test_app.add_middleware(RequestLoggingMiddleware)
+
+    @test_app.get("/test-error")
+    async def trigger_error():
+        raise RuntimeError("Controlled test exception")
+
+    test_client = TestClient(
+        test_app,
+        raise_server_exceptions=False,
+    )
+
+    with patch(
+        "app.middleware.request_logging.record_error_event"
+    ) as mock_record:
+        response = test_client.get("/test-error")
+
+    assert response.status_code == 500
+
+    mock_record.assert_called_once()
+
+    args, kwargs = mock_record.call_args
+
+    assert isinstance(args[0], RuntimeError)
+    assert str(args[0]) == "Controlled test exception"
+
+    assert kwargs["category"] == "application"
+    assert kwargs["severity"] == "error"
+    assert kwargs["endpoint"] == "/test-error"
+    assert kwargs["method"] == "GET"
