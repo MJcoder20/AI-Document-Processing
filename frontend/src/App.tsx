@@ -17,6 +17,7 @@ import type { DocumentResponse, ExtractionResultResponse, IntegrationLogResponse
 ExtractionEditResponse} from "./types/document";
 import "./App.css";
 import AuthScreen from "./components/AuthScreen";
+import MonitoringDashboard from "./components/MonitoringDashboard";
 import { useAuth } from "./context/AuthContext";
 
 
@@ -35,6 +36,7 @@ type DashboardView =
   | "documents"
   | "review"
   | "integrations"
+  | "monitoring"
   | "settings";
 function Dashboard() {
   const { user, logout } = useAuth();
@@ -815,6 +817,10 @@ function Dashboard() {
       title: "ERP Integrations",
       subtitle: "Monitor document integration activity and ERP records.",
     },
+    monitoring: {
+      title: "System Monitoring",
+      subtitle: "Monitor API health, request performance, and background worker operations.",
+    },
     settings: {
       title: "Settings",
       subtitle: "View your account and application information.",
@@ -871,6 +877,15 @@ function Dashboard() {
           >
             <span className="nav-icon">⇄</span>
             ERP Integrations
+          </button>
+
+          <button
+            type="button"
+            className={`nav-item ${activeView === "monitoring" ? "active" : ""}`}
+            onClick={() => setActiveView("monitoring")}
+          >
+            <span className="nav-icon">◉</span>
+            System Monitoring
           </button>
 
           <button
@@ -1855,6 +1870,7 @@ function Dashboard() {
             </div>
           </section>
         )}
+        {activeView === "monitoring" && <MonitoringDashboard />}
       </main>
     </div>
   );
