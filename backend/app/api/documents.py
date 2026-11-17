@@ -2,7 +2,7 @@ from pathlib import Path
 from uuid import UUID
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -210,6 +210,7 @@ async def upload_document(
     status_code=status.HTTP_200_OK,
 )
 def process_uploaded_document(
+    request: Request,
     document_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -243,6 +244,7 @@ def process_uploaded_document(
                 payload={
                     "message_type": "process_document",
                     "document_id": str(document_id),
+                    "request_id": request.state.request_id,
                     "version": 1,
                 },
             )

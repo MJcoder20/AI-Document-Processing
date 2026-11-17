@@ -5,8 +5,10 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from app.api.auth import router as auth_router
 from app.api.documents import router as documents_router
 from app.core.config import settings
+from app.core.logging import setup_logging
+from app.middleware.request_logging import RequestLoggingMiddleware
 
-
+setup_logging()
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
@@ -46,8 +48,10 @@ app.add_middleware(
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
+app.add_middleware(RequestLoggingMiddleware)
 
 app.include_router(
     documents_router,

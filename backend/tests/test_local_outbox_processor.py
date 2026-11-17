@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -7,6 +7,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
+from app.core.request_context import (
+    document_id_context,
+    message_id_context,
+    request_id_context,
+)
 from app.db.base import Base
 from app.models.document import Document
 from app.models.extraction_result import ExtractionResult
@@ -417,3 +422,103 @@ def test_expired_worker_cannot_fail_or_retry_claim(db_session):
     assert outcome is None
     assert message.status == "processing"
     assert message.lock_token == lock_token
+
+
+def test_worker_restores_original_request_id(
+    db_session,
+    monkeypatch,
+):
+    document = create_document(db_session)
+    request_id = str(uuid4())
+
+    message = OutboxMessage(
+        document_id=document.id,
+        message_type="process_document",
+        payload={
+            "document_id": str(document.id),
+            "request_id": request_id,
+        },
+        status="pending",
+    )
+    db_session.add(message)
+    db_session.commit()
+
+    captured_context = {}
+
+    def fake_process_document(db, document_id, *, from_queue=False):
+        captured_context["request_id"] = request_id_context.get()
+        captured_context["message_id"] = message_id_context.get()
+        captured_context["document_id"] = document_id_context.get()
+
+        saved_document = db.get(Document, document_id)
+        saved_document.status = "pending_review"
+
+        db.add(
+            ExtractionResult(
+                document_id=document_id,
+                supplier_name="ABC Technologies",
+                invoice_number="INV-2026-105",
+                extracted_data={},
+                extraction_provider="ollama",
+                extraction_model="qwen2.5:7b",
+            )
+        )
+        db.commit()
+
+    monkeypatch.setattr(
+        local_outbox_processor,
+        "process_document",
+        fake_process_document,
+    )
+
+    local_outbox_processor.process_pending_outbox_messages(db_session)
+
+    assert captured_context["request_id"] == request_id
+    assert captured_context["message_id"] == str(message.id)
+    assert captured_context["document_id"] == str(document.id)
+
+    assert request_id_context.get() == "-"
+    assert message_id_context.get() == "-"
+    assert document_id_context.get() == "-"
+
+
+def test_worker_generates_request_id_for_legacy_message(
+    db_session,
+    monkeypatch,
+):
+    document = create_document(db_session)
+    message = create_message(db_session, document)
+
+    captured_request_ids = []
+
+    def fake_process_document(db, document_id, *, from_queue=False):
+        captured_request_ids.append(request_id_context.get())
+
+        saved_document = db.get(Document, document_id)
+        saved_document.status = "pending_review"
+
+        db.add(
+            ExtractionResult(
+                document_id=document_id,
+                supplier_name="ABC Technologies",
+                invoice_number="INV-2026-105",
+                extracted_data={},
+                extraction_provider="ollama",
+                extraction_model="qwen2.5:7b",
+            )
+        )
+        db.commit()
+
+    monkeypatch.setattr(
+        local_outbox_processor,
+        "process_document",
+        fake_process_document,
+    )
+
+    local_outbox_processor.process_pending_outbox_messages(db_session)
+
+    assert len(captured_request_ids) == 1
+    assert UUID(captured_request_ids[0])
+    assert captured_request_ids[0] != "-"
+
+    assert request_id_context.get() == "-"

@@ -4,10 +4,10 @@ from pydantic import SecretStr, ValidationError
 
 from app.core.config import Settings
 from app.main import app
+from uuid import UUID, uuid4
 
 
 client = TestClient(app)
-
 
 def test_health_endpoint_returns_security_headers():
     response = client.get("/health")
@@ -104,3 +104,29 @@ def test_production_rejects_http_cors_origin():
             cors_origins=["http://app.example.com"],
             allowed_hosts=["api.example.com"],
         )
+
+
+def test_request_id_is_preserved():
+    request_id = str(uuid4())
+
+    response = client.get(
+        "/health",
+        headers={"X-Request-ID": request_id},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == request_id
+
+
+def test_invalid_request_id_is_replaced():
+    response = client.get(
+        "/health",
+        headers={"X-Request-ID": "invalid-request-id"},
+    )
+
+    assert response.status_code == 200
+
+    returned_request_id = response.headers["X-Request-ID"]
+
+    assert returned_request_id != "invalid-request-id"
+    assert str(UUID(returned_request_id)) == returned_request_id
