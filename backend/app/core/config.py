@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
 
     # Storage
+    storage_provider: Literal["local"] = "local"
     document_storage_dir: str = "storage/documents"
     max_upload_size_mb: int = 10
 
