@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.services.confidence_scoring import calculate_field_confidence
 from app.services.s3_storage import download_file_to_path
 
 from app.core.config import settings
@@ -102,6 +103,12 @@ def process_document(
             tables=extracted_content.tables,
         )
 
+        field_confidence = calculate_field_confidence(
+            invoice=invoice_data,
+            document_text=extracted_content.text,
+            tables=extracted_content.tables,
+        )
+
         # Step 4: Create the extraction result.
         extraction_result = ExtractionResult(
             document_id=document.id,
@@ -118,6 +125,12 @@ def process_document(
                 "text": extracted_content.text,
                 "tables": extracted_content.tables,
                 "invoice": invoice_data.model_dump(mode="json"),
+                "field_confidence": {
+                    field: (
+                        str(score) if score is not None else None
+                    )
+                    for field, score in field_confidence.items()
+                },
             },
             extraction_provider=settings.ai_provider,
             extraction_model=get_extraction_model(),
