@@ -289,6 +289,53 @@ def test_gemini_provider_handles_http_error(monkeypatch):
         _extract_gemini_invoice_data("Supplier: ABC")
 
 
+def test_gemini_provider_does_not_retry_daily_quota_exceeded(monkeypatch):
+    from app.services.ai_extraction import settings
+    import app.services.ai_extraction as ai_extraction
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    attempts = {"count": 0}
+
+    def mock_post(self, url, headers=None, json=None):
+        attempts["count"] += 1
+
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": 429,
+                    "message": (
+                        "Generate content requests per day limit "
+                        "exceeded on Free Tier."
+                    ),
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    monkeypatch.setattr(
+        ai_extraction.time,
+        "sleep",
+        lambda _: None,
+    )
+
+    with pytest.raises(
+        AIExtractionError,
+        match="daily free-tier quota exceeded",
+    ):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+    assert attempts["count"] == 1
+
+
 def test_gemini_provider_retries_transient_503(monkeypatch):
     from app.services.ai_extraction import settings
     import app.services.ai_extraction as ai_extraction

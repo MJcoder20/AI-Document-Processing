@@ -221,6 +221,22 @@ def _extract_gemini_invoice_data(
                 except httpx.HTTPStatusError as exc:
                     status_code = exc.response.status_code
 
+                    error_body = exc.response.text.lower()
+
+                    is_daily_quota_exceeded = (
+                            status_code == 429
+                            and (
+                                    "per day limit exceeded" in error_body
+                                    or "perday" in error_body
+                            )
+                    )
+
+                    if is_daily_quota_exceeded:
+                        raise AIExtractionError(
+                            "Gemini daily free-tier quota exceeded. "
+                            "Please try again after the quota resets."
+                        ) from exc
+
                     if status_code not in (429, 503) or attempt == max_attempts - 1:
                         raise
 
@@ -299,8 +315,13 @@ def _extract_gemini_invoice_data(
             "The Gemini extraction request timed out."
         ) from exc
 
+
     except httpx.HTTPStatusError as exc:
-        logger.exception("Gemini returned an HTTP error.")
+        logger.error(
+            "Gemini returned HTTP %s. Response: %s",
+            exc.response.status_code,
+            exc.response.text[:2000],
+        )
         raise AIExtractionError(
             f"Gemini returned HTTP {exc.response.status_code}."
         ) from exc
