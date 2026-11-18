@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from app.services.ai_extraction import (
     AIExtractionError,
     _extract_gemini_invoice_data,
+    _extract_groq_invoice_data,
     extract_invoice_data,
 )
 
@@ -292,6 +293,294 @@ def test_gemini_provider_handles_http_error(monkeypatch):
 
     with pytest.raises(AIExtractionError, match="HTTP 429"):
         _extract_gemini_invoice_data("Supplier: ABC")
+
+def test_groq_provider_extracts_invoice_fields(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "groq_api_key",
+        SecretStr("test-api-key"),
+    )
+    monkeypatch.setattr(
+        settings,
+        "groq_model",
+        "openai/gpt-oss-20b",
+    )
+
+    invoice_data = {
+        "supplier_name": "ABC Technologies",
+        "invoice_number": "INV-2026-105",
+        "invoice_date": "2026-11-12",
+        "due_date": "2026-12-12",
+        "currency": "USD",
+        "subtotal": 500.00,
+        "vat_amount": 75.00,
+        "total_amount": 575.00,
+        "confidence_score": None,
+        "extracted_data": {},
+    }
+
+    response_body = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": json.dumps(invoice_data),
+                },
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        assert url == (
+            "https://api.groq.com/openai/v1/chat/completions"
+        )
+        assert headers["Authorization"] == "Bearer test-api-key"
+        assert json["model"] == "openai/gpt-oss-20b"
+        assert json["response_format"]["type"] == "json_schema"
+
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    invoice = _extract_groq_invoice_data(
+        document_text="Supplier: ABC Technologies",
+    )
+
+    assert invoice.supplier_name == "ABC Technologies"
+    assert invoice.invoice_number == "INV-2026-105"
+    assert invoice.currency == "USD"
+    assert invoice.total_amount == Decimal("575.0")
+
+
+def test_groq_provider_rejects_missing_api_key(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(settings, "groq_api_key", None)
+
+    with pytest.raises(AIExtractionError, match="GROQ_API_KEY"):
+        _extract_groq_invoice_data("Supplier: ABC")
+
+
+def test_groq_provider_handles_http_error(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "groq_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            429,
+            json={"error": {"message": "Rate limit exceeded"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="HTTP 429"):
+        _extract_groq_invoice_data("Supplier: ABC")
+
+
+def test_groq_provider_handles_invalid_json(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "groq_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "not valid json"},
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(
+        AIExtractionError,
+        match="invalid invoice extraction response",
+    ):
+        _extract_groq_invoice_data("Supplier: ABC")
+
+
+def test_groq_provider_handles_max_tokens(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "groq_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": ""},
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="token limit"):
+        _extract_groq_invoice_data("Supplier: ABC")
+
+
+def test_groq_provider_handles_empty_response(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "groq_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": ""},
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="empty extraction response"):
+        _extract_groq_invoice_data("Supplier: ABC")
+
+def test_groq_failure_uses_gemini_fallback(monkeypatch):
+    import app.services.ai_extraction as ai_extraction
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "groq")
+
+    def mock_primary(document_text, tables=None):
+        raise AIExtractionError("Groq unavailable")
+
+    def mock_gemini(document_text, tables=None):
+        return ai_extraction.ExtractedInvoiceData(
+            supplier_name="ABC Technologies",
+            invoice_number="INV-001",
+            currency="USD",
+            total_amount=Decimal("115.00"),
+        )
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_invoice_data_with_provider",
+        mock_primary,
+    )
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_gemini_invoice_data",
+        mock_gemini,
+    )
+
+    invoice = extract_invoice_data("Supplier: ABC Technologies")
+
+    assert invoice.supplier_name == "ABC Technologies"
+    assert invoice.total_amount == Decimal("115.00")
+
+
+def test_groq_success_does_not_use_gemini(monkeypatch):
+    import app.services.ai_extraction as ai_extraction
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "groq")
+
+    expected_invoice = ai_extraction.ExtractedInvoiceData(
+        supplier_name="ABC Technologies",
+        invoice_number="INV-002",
+        currency="USD",
+        total_amount=Decimal("230.00"),
+    )
+
+    def mock_primary(document_text, tables=None):
+        return expected_invoice
+
+    def mock_gemini(document_text, tables=None):
+        raise AssertionError("Gemini should not be called")
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_invoice_data_with_provider",
+        mock_primary,
+    )
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_gemini_invoice_data",
+        mock_gemini,
+    )
+
+    invoice = extract_invoice_data("Supplier: ABC Technologies")
+
+    assert invoice is expected_invoice
+
+
+def test_groq_and_gemini_failure_returns_combined_error(monkeypatch):
+    import app.services.ai_extraction as ai_extraction
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "groq")
+
+    def mock_primary(document_text, tables=None):
+        raise AIExtractionError("Groq unavailable")
+
+    def mock_gemini(document_text, tables=None):
+        raise AIExtractionError("Gemini quota exceeded")
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_invoice_data_with_provider",
+        mock_primary,
+    )
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_gemini_invoice_data",
+        mock_gemini,
+    )
+
+    with pytest.raises(
+        AIExtractionError,
+        match="Groq: Groq unavailable.*Gemini: Gemini quota exceeded",
+    ):
+        extract_invoice_data("Supplier: ABC Technologies")
 
 
 def test_gemini_provider_does_not_retry_daily_quota_exceeded(monkeypatch):

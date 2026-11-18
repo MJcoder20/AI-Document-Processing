@@ -339,6 +339,206 @@ def _extract_gemini_invoice_data(
         ) from exc
 
 
+
+def _extract_groq_invoice_data(
+    document_text: str,
+    tables: list[Any] | None = None,
+) -> ExtractedInvoiceData:
+    """Extract invoice fields using the Groq API."""
+
+    if settings.groq_api_key is None:
+        raise AIExtractionError(
+            "GROQ_API_KEY is not configured."
+        )
+
+    document_content = {
+        "text": document_text,
+        "tables": tables or [],
+    }
+
+    user_prompt = (
+        "Extract invoice information from the following document.\n\n"
+        "DOCUMENT CONTENT:\n"
+        f"{json.dumps(document_content, ensure_ascii=False, default=str)}"
+    )
+
+    invoice_schema = {
+        "type": "object",
+        "properties": {
+            "supplier_name": {
+                "type": ["string", "null"]
+            },
+            "invoice_number": {
+                "type": ["string", "null"]
+            },
+            "invoice_date": {
+                "type": ["string", "null"]
+            },
+            "due_date": {
+                "type": ["string", "null"]
+            },
+            "currency": {
+                "type": ["string", "null"]
+            },
+            "subtotal": {
+                "type": ["number", "null"]
+            },
+            "vat_amount": {
+                "type": ["number", "null"]
+            },
+            "total_amount": {
+                "type": ["number", "null"]
+            },
+            "confidence_score": {
+                "type": ["number", "null"]
+            },
+            "extracted_data": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+        "required": [
+            "supplier_name",
+            "invoice_number",
+            "invoice_date",
+            "due_date",
+            "currency",
+            "subtotal",
+            "vat_amount",
+            "total_amount",
+            "confidence_score",
+            "extracted_data",
+        ],
+        "additionalProperties": False,
+    }
+
+    payload = {
+        "model": settings.groq_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "invoice_extraction",
+                "strict": True,
+                "schema": invoice_schema,
+            },
+        },
+    }
+
+    endpoint = "https://api.groq.com/openai/v1/chat/completions"
+
+    headers = {
+        "Authorization": (
+            f"Bearer {settings.groq_api_key.get_secret_value()}"
+        ),
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(
+            timeout=settings.groq_timeout_seconds
+        ) as client:
+            response = client.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+            )
+
+            response.raise_for_status()
+
+        response_data = response.json()
+
+        choices = response_data.get("choices", [])
+
+        if not choices:
+            raise AIExtractionError(
+                "Groq returned no extraction choices."
+            )
+
+        choice = choices[0]
+        finish_reason = choice.get("finish_reason")
+
+        if finish_reason == "length":
+            raise AIExtractionError(
+                "Groq response was truncated because it reached "
+                "the token limit."
+            )
+
+        if finish_reason != "stop":
+            raise AIExtractionError(
+                f"Groq returned an incomplete response: {finish_reason}."
+            )
+
+        message = choice.get("message", {})
+
+        if message.get("refusal"):
+            raise AIExtractionError(
+                "Groq refused to process the document."
+            )
+
+        model_content = message.get("content")
+
+        if not isinstance(model_content, str) or not model_content.strip():
+            raise AIExtractionError(
+                "Groq returned an empty extraction response."
+            )
+
+        parsed_data = json.loads(model_content)
+
+        extracted_data = ExtractedInvoiceData.model_validate(
+            parsed_data
+        )
+
+        logger.info(
+            "Invoice extraction completed using Groq model %s",
+            settings.groq_model,
+        )
+
+        return extracted_data
+
+    except AIExtractionError:
+        raise
+
+    except httpx.TimeoutException as exc:
+        logger.exception("Groq request timed out.")
+        raise AIExtractionError(
+            "The Groq extraction request timed out."
+        ) from exc
+
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "Groq returned HTTP %s. Response: %s",
+            exc.response.status_code,
+            exc.response.text[:2000],
+        )
+        raise AIExtractionError(
+            f"Groq returned HTTP {exc.response.status_code}."
+        ) from exc
+
+    except httpx.HTTPError as exc:
+        logger.exception("Could not connect to Groq.")
+        raise AIExtractionError(
+            "Could not connect to the Groq service."
+        ) from exc
+
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        logger.exception("Invalid Groq extraction response.")
+        raise AIExtractionError(
+            "Groq returned an invalid invoice extraction response."
+        ) from exc
+
+
 def _extract_invoice_data_with_provider(
     document_text: str,
     tables: list[Any] | None = None,
@@ -364,6 +564,9 @@ def _extract_invoice_data_with_provider(
 
     if settings.ai_provider == "gemini":
         return _extract_gemini_invoice_data(document_text, tables)
+
+    if settings.ai_provider == "groq":
+        return _extract_groq_invoice_data(document_text, tables)
 
     if settings.ai_provider != "ollama":
         raise AIExtractionError(
@@ -500,14 +703,16 @@ def extract_invoice_data(
     tables: list[Any] | None = None,
 ) -> ExtractedInvoiceData:
     """
-    Extract invoice data using Ollama as the primary provider
-    and Gemini as the fallback.
+    Extract invoice data using the configured primary provider
+    and Gemini as a fallback for Ollama and Groq.
     """
-    if settings.ai_provider != "ollama":
+    if settings.ai_provider not in ("ollama", "groq"):
         return _extract_invoice_data_with_provider(
             document_text,
             tables,
         )
+
+    primary_provider = settings.ai_provider
 
     try:
         return _extract_invoice_data_with_provider(
@@ -515,11 +720,12 @@ def extract_invoice_data(
             tables,
         )
 
-    except AIExtractionError as ollama_error:
+    except AIExtractionError as primary_error:
         logger.warning(
-            "Ollama extraction failed. Attempting Gemini fallback. "
+            "%s extraction failed. Attempting Gemini fallback. "
             "Reason: %s",
-            ollama_error,
+            primary_provider.capitalize(),
+            primary_error,
         )
 
         try:
@@ -529,16 +735,21 @@ def extract_invoice_data(
             )
 
             logger.info(
-                "Invoice extraction succeeded using Gemini fallback."
+                "Invoice extraction succeeded using Gemini fallback "
+                "after %s failure.",
+                primary_provider,
             )
 
             return result
 
         except AIExtractionError as gemini_error:
-            logger.exception("Gemini fallback also failed.")
+            logger.exception(
+                "Gemini fallback failed after %s failure.",
+                primary_provider,
+            )
 
             raise AIExtractionError(
                 "Invoice extraction failed with both providers. "
-                f"Ollama: {ollama_error} "
+                f"{primary_provider.capitalize()}: {primary_error} "
                 f"Gemini: {gemini_error}"
             ) from gemini_error

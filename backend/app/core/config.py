@@ -66,12 +66,23 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "testserver"]
 
     # AI extraction
-    ai_provider: Literal["mock", "openai", "ollama", "gemini"] = "ollama"
+    ai_provider: Literal[
+        "mock",
+        "openai",
+        "ollama",
+        "gemini",
+        "groq",
+    ] = "ollama"
 
     # OpenAI
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o-mini"
     openai_timeout_seconds: int = 60
+
+    # Groq
+    groq_api_key: SecretStr | None = None
+    groq_model: str = "openai/gpt-oss-20b"
+    groq_timeout_seconds: int = 60
 
     # Google Gemini
     gemini_api_key: SecretStr | None = None
