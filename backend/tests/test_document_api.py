@@ -1,4 +1,5 @@
 import pytest
+from io import BytesIO
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -29,6 +30,7 @@ def api_environment(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings, "processing_mode", "inline")
     monkeypatch.setattr(settings, "document_storage_dir", str(storage_dir))
+    monkeypatch.setattr(settings, "storage_provider", "local")
     monkeypatch.setattr(settings, "max_upload_size_mb", 1)
     monkeypatch.setattr(
         settings,
@@ -1132,3 +1134,144 @@ def test_other_user_cannot_preview_or_download_document(
     assert client.get(
         f"/api/v1/documents/{document_id}/download"
     ).status_code == 200
+
+
+def test_owner_can_preview_s3_pdf(api_environment, monkeypatch):
+    client, _ = api_environment
+
+    monkeypatch.setattr(settings, "storage_provider", "s3")
+
+    pdf_content = b"%PDF-1.4\nS3 test PDF content\n%%EOF"
+
+    monkeypatch.setattr(
+        documents_api,
+        "open_download",
+        lambda key: BytesIO(pdf_content),
+    )
+
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        document = Document(
+            owner_id=db.query(User).filter_by(
+                email="admin@example.com"
+            ).first().id,
+            original_filename="s3-invoice.pdf",
+            storage_path="documents/test-invoice.pdf",
+            content_type="application/pdf",
+            file_size=len(pdf_content),
+            document_type="invoice",
+            status="uploaded",
+        )
+
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        document_id = str(document.id)
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/preview"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert "inline" in response.headers["content-disposition"]
+    assert response.content == pdf_content
+
+
+def test_owner_can_download_s3_document(api_environment, monkeypatch):
+    client, _ = api_environment
+
+    monkeypatch.setattr(settings, "storage_provider", "s3")
+
+    file_content = b"S3 document download test"
+
+    monkeypatch.setattr(
+        documents_api,
+        "open_download",
+        lambda key: BytesIO(file_content),
+    )
+
+    with client.testing_session_factory() as db:
+        from app.models.document import Document
+
+        owner = db.query(User).filter_by(
+            email="admin@example.com"
+        ).first()
+
+        document = Document(
+            owner_id=owner.id,
+            original_filename="s3-invoice.pdf",
+            storage_path="documents/test-invoice.pdf",
+            content_type="application/pdf",
+            file_size=len(file_content),
+            document_type="invoice",
+            status="uploaded",
+        )
+
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+
+        document_id = str(document.id)
+
+    response = client.get(
+        f"/api/v1/documents/{document_id}/download"
+    )
+
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.content == file_content
+
+
+def test_s3_upload_is_cleaned_up_when_database_save_fails(
+    api_environment,
+    monkeypatch,
+):
+    client, _ = api_environment
+
+    monkeypatch.setattr(settings, "storage_provider", "s3")
+
+    uploaded_keys = []
+    deleted_keys = []
+
+    def fake_upload_fileobj(file_obj, key, content_type):
+        uploaded_keys.append(key)
+        return key
+
+    def fake_delete_object(key):
+        deleted_keys.append(key)
+
+    def fail_create_document(*args, **kwargs):
+        raise SQLAlchemyError("Simulated database failure")
+
+    monkeypatch.setattr(
+        "app.services.storage.upload_fileobj",
+        fake_upload_fileobj,
+    )
+    monkeypatch.setattr(
+        documents_api,
+        "delete_object",
+        fake_delete_object,
+    )
+    monkeypatch.setattr(
+        documents_api,
+        "create_document",
+        fail_create_document,
+    )
+
+    response = client.post(
+        "/api/v1/documents/",
+        files={
+            "file": (
+                "s3-failure-test.pdf",
+                b"%PDF-1.4\nTest PDF\n%%EOF",
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 500
+    assert len(uploaded_keys) == 1
+    assert deleted_keys == uploaded_keys

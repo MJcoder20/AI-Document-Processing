@@ -1,13 +1,16 @@
 from pathlib import Path
 from uuid import UUID
+from urllib.parse import quote
 from datetime import date
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from app.services.s3_storage import delete_object, open_download
 from app.models.extraction_edit import ExtractionEdit
 from app.schemas.extraction import ExtractionEditResponse
 from app.core.config import settings
@@ -60,7 +63,7 @@ from app.services.storage import (
     save_upload,
 )
 
-
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 
@@ -194,13 +197,40 @@ async def upload_document(
 
         return document
 
+
+
+
     except SQLAlchemyError as exc:
+
         db.rollback()
-        Path(storage_path).unlink(missing_ok=True)
+
+        try:
+
+            if settings.storage_provider == "s3":
+
+                delete_object(storage_path)
+
+            else:
+
+                Path(storage_path).unlink(missing_ok=True)
+
+
+        except Exception:
+
+            logger.exception(
+
+                "Could not clean up uploaded file: %s",
+
+                storage_path,
+
+            )
 
         raise HTTPException(
+
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+
             detail="Could not save the document record.",
+
         ) from exc
 
 
@@ -418,12 +448,25 @@ def preview_document(
             detail="Inline preview is currently supported for PDF files only.",
         )
 
+    filename = Path(document.original_filename).name
+    safe_filename = quote(filename, safe="")
+
+    if settings.storage_provider == "s3":
+        return StreamingResponse(
+            open_download(document.storage_path),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{safe_filename}",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     file_path = _get_document_file_path(document)
 
     return FileResponse(
         path=file_path,
         media_type="application/pdf",
-        filename=Path(document.original_filename).name,
+        filename=filename,
         content_disposition_type="inline",
     )
 
@@ -441,12 +484,25 @@ def download_document(
     """Download the original file of an accessible document."""
 
     document = _get_accessible_document(db, document_id, current_user)
+    filename = Path(document.original_filename).name
+    safe_filename = quote(filename, safe="")
+
+    if settings.storage_provider == "s3":
+        return StreamingResponse(
+            open_download(document.storage_path),
+            media_type=document.content_type,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     file_path = _get_document_file_path(document)
 
     return FileResponse(
         path=file_path,
         media_type=document.content_type,
-        filename=Path(document.original_filename).name,
+        filename=filename,
         content_disposition_type="attachment",
     )
 

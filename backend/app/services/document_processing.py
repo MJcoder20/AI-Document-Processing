@@ -1,9 +1,13 @@
-
 import logging
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Iterator
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+
+from app.services.s3_storage import download_file_to_path
 
 from app.core.config import settings
 from app.models.document import Document
@@ -31,6 +35,25 @@ def get_extraction_model() -> str:
 class DocumentProcessingError(Exception):
     """Raised when document processing fails."""
 
+@contextmanager
+def get_document_processing_path(storage_path: str) -> Iterator[Path]:
+    """Provide a local path for processing locally or S3-stored documents."""
+
+    if settings.storage_provider == "local":
+        yield Path(storage_path)
+        return
+
+    suffix = Path(storage_path).suffix
+
+    with TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory) / f"document{suffix}"
+
+        download_file_to_path(
+            key=storage_path,
+            destination=temporary_path,
+        )
+
+        yield temporary_path
 
 def process_document(
     db: Session,
@@ -67,9 +90,8 @@ def process_document(
         db.commit()
 
         # Step 2: Extract text and tables.
-        extracted_content = extract_document(
-            Path(document.storage_path)
-        )
+        with get_document_processing_path(document.storage_path) as file_path:
+            extracted_content = extract_document(file_path)
 
         # Step 3: Extract structured invoice information using AI.
         invoice_data = extract_invoice_data(

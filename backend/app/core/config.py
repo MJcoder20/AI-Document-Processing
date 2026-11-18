@@ -26,9 +26,16 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
 
     # Storage
-    storage_provider: Literal["local"] = "local"
+    storage_provider: Literal["local", "s3"] = "local"
     document_storage_dir: str = "storage/documents"
     max_upload_size_mb: int = 10
+
+    # S3-compatible object storage (Filebase)
+    s3_endpoint_url: str | None = None
+    s3_region: str = "us-east-1"
+    s3_bucket_name: str | None = None
+    s3_access_key_id: SecretStr | None = None
+    s3_secret_access_key: SecretStr | None = None
 
 
     # Background processing
@@ -74,6 +81,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_settings(self):
+        if self.storage_provider == "s3":
+            if not self.s3_endpoint_url:
+                raise ValueError("S3_ENDPOINT_URL is required when using S3 storage.")
+
+            if not self.s3_bucket_name:
+                raise ValueError("S3_BUCKET_NAME is required when using S3 storage.")
+
+            if not self.s3_access_key_id:
+                raise ValueError("S3_ACCESS_KEY_ID is required when using S3 storage.")
+
+            if not self.s3_secret_access_key:
+                raise ValueError("S3_SECRET_ACCESS_KEY is required when using S3 storage.")
         if self.app_env.lower() == "production":
             if self.debug:
                 raise ValueError("DEBUG must be false in production.")
