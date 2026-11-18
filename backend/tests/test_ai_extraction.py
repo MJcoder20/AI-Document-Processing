@@ -289,6 +289,99 @@ def test_gemini_provider_handles_http_error(monkeypatch):
         _extract_gemini_invoice_data("Supplier: ABC")
 
 
+def test_gemini_provider_retries_transient_503(monkeypatch):
+    from app.services.ai_extraction import settings
+    import app.services.ai_extraction as ai_extraction
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    monkeypatch.setattr(ai_extraction.time, "sleep", lambda _: None)
+
+    attempts = {"count": 0}
+
+    success_body = {
+        "candidates": [
+            {
+                "finishReason": "STOP",
+                "content": {
+                    "parts": [
+                        {
+                            "text": (
+                                '{"supplier_name":"ABC",'
+                                '"invoice_number":"INV-001",'
+                                '"invoice_date":null,'
+                                '"due_date":null,'
+                                '"currency":"USD",'
+                                '"subtotal":100,'
+                                '"vat_amount":15,'
+                                '"total_amount":115}'
+                            )
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        attempts["count"] += 1
+
+        if attempts["count"] == 1:
+            return httpx.Response(
+                503,
+                json={"error": {"message": "Service unavailable"}},
+                request=httpx.Request("POST", url),
+            )
+
+        return httpx.Response(
+            200,
+            json=success_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    invoice = _extract_gemini_invoice_data("Supplier: ABC")
+
+    assert attempts["count"] == 2
+    assert invoice.supplier_name == "ABC"
+
+
+def test_gemini_provider_stops_after_max_retries(monkeypatch):
+    from app.services.ai_extraction import settings
+    import app.services.ai_extraction as ai_extraction
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    monkeypatch.setattr(ai_extraction.time, "sleep", lambda _: None)
+
+    attempts = {"count": 0}
+
+    def mock_post(self, url, headers=None, json=None):
+        attempts["count"] += 1
+        return httpx.Response(
+            503,
+            json={"error": {"message": "Service unavailable"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="HTTP 503"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+    assert attempts["count"] == 3
+
+
+
 def test_gemini_provider_handles_invalid_json(monkeypatch):
     from app.services.ai_extraction import settings
 

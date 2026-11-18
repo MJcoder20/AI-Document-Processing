@@ -1,6 +1,7 @@
 import re
 import json
 import logging
+import time
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -201,15 +202,40 @@ def _extract_gemini_invoice_data(
     }
 
     try:
+
+        max_attempts = 3
+
         with httpx.Client(
-            timeout=settings.gemini_timeout_seconds
+                timeout=settings.gemini_timeout_seconds
         ) as client:
-            response = client.post(
-                endpoint,
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
+            for attempt in range(max_attempts):
+                response = client.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                )
+
+                try:
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status_code = exc.response.status_code
+
+                    if status_code not in (429, 503) or attempt == max_attempts - 1:
+                        raise
+
+                    delay = 2 ** attempt
+
+                    logger.warning(
+                        "Gemini returned HTTP %s; retrying in %s seconds "
+                        "(attempt %s/%s).",
+                        status_code,
+                        delay,
+                        attempt + 1,
+                        max_attempts,
+                    )
+
+                    time.sleep(delay)
 
         response_data = response.json()
 
