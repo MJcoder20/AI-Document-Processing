@@ -203,7 +203,10 @@ def test_upload_document_cleans_file_after_database_failure(
     assert list(storage_dir.iterdir()) == []
 
 
-def test_process_document_success(api_environment):
+def test_process_document_success(api_environment, monkeypatch):
+    from app.services.document_processing import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "ollama")
     client, _ = api_environment
 
     content = "Supplier: Acme Ltd\nInvoice Number: INV-2026-001\nTotal: 150.00"
@@ -250,7 +253,11 @@ def test_process_document_not_found(api_environment):
     assert response.json()["detail"] == "Document not found."
 
 
-def test_process_document_twice_returns_conflict(api_environment):
+def test_process_document_twice_returns_conflict(api_environment, monkeypatch):
+    from app.services.document_processing import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "ollama")
+
     client, _ = api_environment
 
     upload_response = client.post(

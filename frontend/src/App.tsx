@@ -750,17 +750,6 @@ function Dashboard() {
     },
   ];
 
-  const filteredDocuments = documents.filter((document) => {
-    const matchesSearch = document.original_filename
-      .toLowerCase()
-      .includes(searchQuery.trim().toLowerCase());
-
-    const matchesStatus =
-      statusFilter === "all" || document.status === statusFilter;
-
-    return matchesSearch && matchesStatus;
-  });
-
   const pendingReviewDocuments = documents.filter(
     (document) => document.status === "pending_review",
   );
@@ -790,11 +779,7 @@ function Dashboard() {
       : null;
 
   const visibleDocuments =
-    activeView === "documents"
-      ? documentPageItems
-      : activeView === "review"
-        ? pendingReviewDocuments
-        : filteredDocuments.slice(0, 5);
+    activeView === "documents" ? documentPageItems : pendingReviewDocuments;
 
   const getDocumentFilename = (documentId: string) =>
     documents.find((document) => document.id === documentId)
@@ -1038,7 +1023,7 @@ function Dashboard() {
           </section>
         )}
 
-        {(activeView === "overview" || activeView === "documents") && (
+        {(activeView === "documents") && (
           <section className="content-card">
             <div className="section-heading">
               <div>
@@ -1090,16 +1075,12 @@ function Dashboard() {
           </section>
         )}
 
-        {(activeView === "documents" || activeView === "review" || activeView === "overview") && (
+        {(activeView === "documents" || activeView === "review") && (
           <section className="content-card" style={{ marginTop: 24 }}>
             <div className="section-heading">
               <div>
                 <h2 className="section-title">
-                  {activeView === "review"
-                    ? "Documents Awaiting Review"
-                    : activeView === "overview"
-                      ? "Recent Documents"
-                      : "All Documents"}
+                  {activeView === "review" ? "Documents Awaiting Review" : "All Documents"}
                 </h2>
                 <p className="section-description">
                   {activeView === "review"

@@ -1,14 +1,21 @@
+import json
 from decimal import Decimal
 
-from app.services.ai_extraction import extract_invoice_data
-import json
-
 import httpx
+import pytest
+from pydantic import SecretStr
 
-from app.services.ai_extraction import extract_invoice_data
-
+from app.services.ai_extraction import (
+    AIExtractionError,
+    _extract_gemini_invoice_data,
+    extract_invoice_data,
+)
 
 def test_extract_invoice_data_handles_nested_invoice_fields(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.ai_extraction.settings.ai_provider",
+        "ollama",
+    )
     nested_response = {
         "supplier_name": None,
         "invoice_number": None,
@@ -61,6 +68,10 @@ def test_extract_invoice_data_handles_nested_invoice_fields(monkeypatch):
 
 
 def test_extract_invoice_data_handles_double_nested_invoice_fields(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.ai_extraction.settings.ai_provider",
+        "ollama",
+    )
     nested_response = {
         "supplier_name": None,
         "invoice_number": None,
@@ -187,3 +198,278 @@ def test_extract_invoice_data_rejects_empty_content(monkeypatch):
         match="no extractable content",
     ):
         extract_invoice_data(document_text="")
+
+
+
+def test_gemini_provider_extracts_invoice_fields(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "candidates": [
+            {
+                "finishReason": "STOP",
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps({
+                                "supplier_name": "ABC Technologies",
+                                "invoice_number": "INV-2026-105",
+                                "invoice_date": "2026-11-12",
+                                "due_date": "2026-12-12",
+                                "currency": "USD",
+                                "subtotal": "500.00",
+                                "vat_amount": "75.00",
+                                "total_amount": "575.00",
+                                "confidence_score": None,
+                                "extracted_data": {},
+                            })
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        assert "gemini-3.8-flash:generateContent" in url
+        assert headers["x-goog-api-key"] == "test-api-key"
+
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    invoice = _extract_gemini_invoice_data(
+        document_text="Supplier: ABC Technologies",
+    )
+
+    assert invoice.supplier_name == "ABC Technologies"
+    assert invoice.invoice_number == "INV-2026-105"
+    assert invoice.currency == "USD"
+    assert invoice.total_amount == Decimal("575.00")
+
+
+def test_gemini_provider_rejects_missing_api_key(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+
+    with pytest.raises(AIExtractionError, match="GEMINI_API_KEY"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_http_error(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            429,
+            json={"error": {"message": "Rate limit exceeded"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="HTTP 429"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_invalid_json(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "candidates": [
+            {
+                "finishReason": "STOP",
+                "content": {
+                    "parts": [{"text": "This is not valid JSON"}]
+                }
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="invalid invoice"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_empty_response(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "candidates": [
+            {
+                "finishReason": "STOP",
+                "content": {"parts": []},
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="empty response"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_timeout(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    def mock_post(self, url, headers=None, json=None):
+        raise httpx.TimeoutException("Request timed out")
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="timed out"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_invalid_schema(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "candidates": [
+            {
+                "finishReason": "STOP",
+                "content": {
+                    "parts": [
+                        {
+                            "text": json.dumps({
+                                "currency": "US",
+                                "confidence_score": 1.5,
+                            })
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_max_tokens(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "candidates": [
+            {
+                "finishReason": "MAX_TOKENS",
+                "content": {
+                    "parts": [{"text": '{"supplier_name": "ABC"'}]
+                },
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="token limit"):
+        _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_gemini_provider_handles_safety_block(monkeypatch):
+    from app.services.ai_extraction import settings
+
+    monkeypatch.setattr(
+        settings,
+        "gemini_api_key",
+        SecretStr("test-api-key"),
+    )
+
+    response_body = {
+        "candidates": [
+            {
+                "finishReason": "SAFETY",
+                "content": {"parts": []},
+            }
+        ]
+    }
+
+    def mock_post(self, url, headers=None, json=None):
+        return httpx.Response(
+            200,
+            json=response_body,
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", mock_post)
+
+    with pytest.raises(AIExtractionError, match="safety"):
+        _extract_gemini_invoice_data("Supplier: ABC")

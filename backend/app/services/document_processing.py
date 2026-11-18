@@ -29,6 +29,9 @@ def get_extraction_model() -> str:
     if settings.ai_provider == "ollama":
         return settings.ollama_model
 
+    if settings.ai_provider == "gemini":
+        return settings.gemini_model
+
     return "unknown"
 
 

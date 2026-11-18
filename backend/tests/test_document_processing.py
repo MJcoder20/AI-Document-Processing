@@ -88,7 +88,11 @@ def create_test_document(
     return document
 
 
-def test_process_document_success(db_session, tmp_path):
+def test_process_document_success(db_session, tmp_path, monkeypatch):
+    from app.services.document_processing import settings
+
+    monkeypatch.setattr(settings, "ai_provider", "ollama")
+
     document = create_test_document(
         db_session,
         tmp_path,

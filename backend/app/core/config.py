@@ -67,12 +67,17 @@ class Settings(BaseSettings):
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "testserver"]
 
     # AI extraction
-    ai_provider: Literal["mock", "openai", "ollama"] = "ollama"
+    ai_provider: Literal["mock", "openai", "ollama", "gemini"] = "ollama"
 
     # OpenAI
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o-mini"
     openai_timeout_seconds: int = 60
+
+    # Google Gemini
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_timeout_seconds: int = 120
 
     # Ollama
     ollama_base_url: str = "http://localhost:11434"

@@ -149,12 +149,155 @@ def _extract_mock_invoice_data(
         extracted_data={},
     )
 
+
+def _extract_gemini_invoice_data(
+    document_text: str,
+    tables: list[Any] | None = None,
+) -> ExtractedInvoiceData:
+    """Extract invoice fields using the Google Gemini API."""
+
+    if settings.gemini_api_key is None:
+        raise AIExtractionError(
+            "GEMINI_API_KEY is not configured."
+        )
+
+    document_content = {
+        "text": document_text,
+        "tables": tables or [],
+    }
+
+    user_prompt = (
+        "Extract invoice information from the following document.\n\n"
+        "DOCUMENT CONTENT:\n"
+        f"{json.dumps(document_content, ensure_ascii=False, default=str)}\n\n"
+        "Return JSON matching this schema:\n"
+        f"{json.dumps(ExtractedInvoiceData.model_json_schema())}"
+    )
+
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": user_prompt}],
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0,
+        },
+    }
+
+    endpoint = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{settings.gemini_model}:generateContent"
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": settings.gemini_api_key.get_secret_value(),
+    }
+
+    try:
+        with httpx.Client(
+            timeout=settings.gemini_timeout_seconds
+        ) as client:
+            response = client.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+
+        response_data = response.json()
+
+        candidates = response_data.get("candidates", [])
+
+        if not candidates:
+            raise AIExtractionError(
+                "Gemini returned no extraction candidates."
+            )
+
+        candidate = candidates[0]
+        finish_reason = candidate.get("finishReason")
+
+        if finish_reason == "MAX_TOKENS":
+            raise AIExtractionError(
+                "Gemini response was truncated because it reached the token limit."
+            )
+
+        if finish_reason == "SAFETY":
+            raise AIExtractionError(
+                "Gemini blocked the extraction response for safety reasons."
+            )
+
+        if finish_reason != "STOP":
+            raise AIExtractionError(
+                f"Gemini returned an incomplete response: {finish_reason}."
+            )
+
+        parts = candidate.get("content", {}).get("parts", [])
+
+        model_content = "".join(
+            part.get("text", "")
+            for part in parts
+            if isinstance(part.get("text"), str)
+        )
+
+        if not model_content.strip():
+            raise AIExtractionError(
+                "Gemini returned an empty response."
+            )
+
+        parsed_data = json.loads(model_content)
+
+        extracted_data = ExtractedInvoiceData.model_validate(
+            parsed_data
+        )
+
+        logger.info(
+            "Invoice extraction completed using Gemini model %s",
+            settings.gemini_model,
+        )
+
+        return extracted_data
+
+    except AIExtractionError:
+        raise
+
+    except httpx.TimeoutException as exc:
+        logger.exception("Gemini request timed out.")
+        raise AIExtractionError(
+            "The Gemini extraction request timed out."
+        ) from exc
+
+    except httpx.HTTPStatusError as exc:
+        logger.exception("Gemini returned an HTTP error.")
+        raise AIExtractionError(
+            f"Gemini returned HTTP {exc.response.status_code}."
+        ) from exc
+
+    except httpx.HTTPError as exc:
+        logger.exception("Could not connect to Gemini.")
+        raise AIExtractionError(
+            "Could not connect to the Gemini service."
+        ) from exc
+
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        logger.exception("Invalid Gemini extraction response.")
+        raise AIExtractionError(
+            "Gemini returned an invalid invoice extraction response."
+        ) from exc
+
+
 def extract_invoice_data(
     document_text: str,
     tables: list[Any] | None = None,
 ) -> ExtractedInvoiceData:
     """
-    Extract structured invoice information using the configured Ollama model.
+    Extract structured invoice information using the configured AI provider.
 
     Args:
         document_text: Text extracted from the original document.
@@ -171,6 +314,9 @@ def extract_invoice_data(
 
     if settings.ai_provider == "mock":
         return _extract_mock_invoice_data(document_text, tables)
+
+    if settings.ai_provider == "gemini":
+        return _extract_gemini_invoice_data(document_text, tables)
 
     if settings.ai_provider != "ollama":
         raise AIExtractionError(
