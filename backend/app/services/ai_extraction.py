@@ -339,7 +339,7 @@ def _extract_gemini_invoice_data(
         ) from exc
 
 
-def extract_invoice_data(
+def _extract_invoice_data_with_provider(
     document_text: str,
     tables: list[Any] | None = None,
 ) -> ExtractedInvoiceData:
@@ -493,3 +493,52 @@ def extract_invoice_data(
         raise AIExtractionError(
             "Ollama returned an invalid invoice extraction response."
         ) from exc
+
+
+def extract_invoice_data(
+    document_text: str,
+    tables: list[Any] | None = None,
+) -> ExtractedInvoiceData:
+    """
+    Extract invoice data using Ollama as the primary provider
+    and Gemini as the fallback.
+    """
+    if settings.ai_provider != "ollama":
+        return _extract_invoice_data_with_provider(
+            document_text,
+            tables,
+        )
+
+    try:
+        return _extract_invoice_data_with_provider(
+            document_text,
+            tables,
+        )
+
+    except AIExtractionError as ollama_error:
+        logger.warning(
+            "Ollama extraction failed. Attempting Gemini fallback. "
+            "Reason: %s",
+            ollama_error,
+        )
+
+        try:
+            result = _extract_gemini_invoice_data(
+                document_text,
+                tables,
+            )
+
+            logger.info(
+                "Invoice extraction succeeded using Gemini fallback."
+            )
+
+            return result
+
+        except AIExtractionError as gemini_error:
+            logger.exception("Gemini fallback also failed.")
+
+            raise AIExtractionError(
+                "Invoice extraction failed with both providers. "
+                f"Ollama: {ollama_error} "
+                f"Gemini: {gemini_error}"
+            ) from gemini_error

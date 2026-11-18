@@ -618,3 +618,112 @@ def test_gemini_provider_handles_safety_block(monkeypatch):
 
     with pytest.raises(AIExtractionError, match="safety"):
         _extract_gemini_invoice_data("Supplier: ABC")
+
+
+def test_ollama_failure_uses_gemini_fallback(monkeypatch):
+    import app.services.ai_extraction as ai_extraction
+
+    monkeypatch.setattr(
+        ai_extraction.settings,
+        "ai_provider",
+        "ollama",
+    )
+
+    expected_invoice = ai_extraction.ExtractedInvoiceData(
+        supplier_name="ABC Technologies",
+        invoice_number="INV-001",
+        currency="USD",
+        total_amount=Decimal("100.00"),
+    )
+
+    def mock_ollama(*args, **kwargs):
+        raise AIExtractionError("Ollama unavailable.")
+
+    def mock_gemini(*args, **kwargs):
+        return expected_invoice
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_invoice_data_with_provider",
+        mock_ollama,
+    )
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_gemini_invoice_data",
+        mock_gemini,
+    )
+
+    result = extract_invoice_data("Supplier: ABC Technologies")
+
+    assert result.supplier_name == "ABC Technologies"
+    assert result.invoice_number == "INV-001"
+
+
+def test_ollama_success_does_not_use_gemini(monkeypatch):
+    import app.services.ai_extraction as ai_extraction
+
+    monkeypatch.setattr(
+        ai_extraction.settings,
+        "ai_provider",
+        "ollama",
+    )
+
+    expected_invoice = ai_extraction.ExtractedInvoiceData(
+        supplier_name="ABC Technologies",
+        invoice_number="INV-002",
+    )
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_invoice_data_with_provider",
+        lambda *args, **kwargs: expected_invoice,
+    )
+
+    def unexpected_gemini(*args, **kwargs):
+        pytest.fail("Gemini should not be called.")
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_gemini_invoice_data",
+        unexpected_gemini,
+    )
+
+    result = extract_invoice_data("Supplier: ABC Technologies")
+
+    assert result.invoice_number == "INV-002"
+
+
+def test_both_providers_failing_returns_combined_error(monkeypatch):
+    import app.services.ai_extraction as ai_extraction
+
+    monkeypatch.setattr(
+        ai_extraction.settings,
+        "ai_provider",
+        "ollama",
+    )
+
+    def mock_ollama(*args, **kwargs):
+        raise AIExtractionError("Ollama unavailable.")
+
+    def mock_gemini(*args, **kwargs):
+        raise AIExtractionError("Gemini quota exhausted.")
+
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_invoice_data_with_provider",
+        mock_ollama,
+    )
+    monkeypatch.setattr(
+        ai_extraction,
+        "_extract_gemini_invoice_data",
+        mock_gemini,
+    )
+
+    with pytest.raises(
+        AIExtractionError,
+        match="both providers",
+    ) as exc_info:
+        extract_invoice_data("Supplier: ABC Technologies")
+
+    assert "Ollama unavailable" in str(exc_info.value)
+    assert "Gemini quota exhausted" in str(exc_info.value)
