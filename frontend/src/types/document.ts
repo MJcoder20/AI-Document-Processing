@@ -17,6 +17,16 @@ export interface DuplicateInvoiceReference {
   created_at: string | null;
 }
 
+export interface FieldConfidenceScores {
+  supplier_name?: number | string | null;
+  invoice_number?: number | string | null;
+  invoice_date?: number | string | null;
+  due_date?: number | string | null;
+  currency?: number | string | null;
+  subtotal?: number | string | null;
+  vat_amount?: number | string | null;
+  total_amount?: number | string | null;
+}
 
 export interface ExtractionResultResponse {
   id: string;
@@ -37,6 +47,7 @@ export interface ExtractionResultResponse {
   confidence_score: number | null;
 
   extracted_data: {
+    field_confidence?: FieldConfidenceScores;
     validation?: {
       warnings?: unknown[];
       errors?: unknown[];

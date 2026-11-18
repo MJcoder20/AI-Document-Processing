@@ -1390,11 +1390,46 @@ function Dashboard() {
                     Model: {extraction.extraction_model || "Unknown"}
                   </span>
                   <span>
-                    Confidence: {extraction.confidence_score == null
+                    Overall Confidence: {extraction.confidence_score == null
                       ? "Not available"
                       : `${(extraction.confidence_score * 100).toFixed(1)}%`}
                   </span>
                 </div>
+                {extraction.extracted_data.field_confidence && (
+                  <div className="field-confidence">
+                    <h4>Field Confidence</h4>
+
+                    <div className="extraction-grid">
+                      {(
+                        [
+                          ["Supplier Name", "supplier_name"],
+                          ["Invoice Number", "invoice_number"],
+                          ["Invoice Date", "invoice_date"],
+                          ["Due Date", "due_date"],
+                          ["Currency", "currency"],
+                          ["Subtotal", "subtotal"],
+                          ["VAT Amount", "vat_amount"],
+                          ["Total Amount", "total_amount"],
+                        ] as const
+                      ).map(([label, field]) => {
+                        const score =
+                          extraction.extracted_data.field_confidence?.[field];
+
+                        return (
+                          <div className="extraction-field" key={field}>
+                            <span>{label}</span>
+                            <strong>
+                              {score == null
+                                ? "Not available"
+                                : `${(Number(score) * 100).toFixed(1)}%`}
+                            </strong>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {extraction.extracted_data.validation && (
                   <div
                     className={`validation-status validation-${extraction.extracted_data.validation.status}`}
