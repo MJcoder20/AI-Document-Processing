@@ -47,7 +47,7 @@ def test_extract_invoice_data_handles_nested_invoice_fields(monkeypatch):
         }
     }
 
-    def mock_post(self, url, json=None):
+    def mock_post(self, url, json=None, headers=None):
         return httpx.Response(
             200,
             json=response_body,
@@ -112,7 +112,7 @@ def test_extract_invoice_data_handles_double_nested_invoice_fields(monkeypatch):
         }
     }
 
-    def mock_post(self, url, json=None):
+    def mock_post(self, url, json=None, headers=None):
         return httpx.Response(
             200,
             json=response_body,
@@ -208,6 +208,11 @@ def test_gemini_provider_extracts_invoice_fields(monkeypatch):
         settings,
         "gemini_api_key",
         SecretStr("test-api-key"),
+    )
+    monkeypatch.setattr(
+        settings,
+        "gemini_model",
+        "gemini-3.8-flash",
     )
 
     response_body = {

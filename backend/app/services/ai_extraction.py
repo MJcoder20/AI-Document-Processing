@@ -396,9 +396,20 @@ def extract_invoice_data(
 
     endpoint = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
 
+    headers = {}
+
+    if settings.ollama_api_key:
+        headers["Authorization"] = (
+            f"Bearer {settings.ollama_api_key.get_secret_value()}"
+        )
+
     try:
         with httpx.Client(timeout=settings.ollama_timeout_seconds) as client:
-            response = client.post(endpoint, json=payload)
+            response = client.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+            )
             response.raise_for_status()
 
         response_data = response.json()

@@ -1,5 +1,4 @@
-﻿
-from functools import lru_cache
+﻿from functools import lru_cache
 from typing import Literal
 
 from pydantic import SecretStr, model_validator
@@ -83,6 +82,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
     ollama_timeout_seconds: int = 120
+    ollama_api_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def validate_production_settings(self):
