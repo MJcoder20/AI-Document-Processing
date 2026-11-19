@@ -70,6 +70,8 @@ function Dashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalDocuments, setTotalDocuments] = useState(0);
 
+  const [documentsRefreshKey, setDocumentsRefreshKey] = useState(0);
+  const [isPollingDocuments, setIsPollingDocuments] = useState(false);
   const DOCUMENTS_PER_PAGE = 20;
 
   const [extraction, setExtraction] =
@@ -355,6 +357,22 @@ function Dashboard() {
         if (!cancelled) {
           setDocumentPageItems(response.items);
           setTotalDocuments(response.total);
+
+          setSelectedDocument((previous) => {
+            if (!previous) return previous;
+
+            const refreshedDocument = response.items.find(
+              (document) => document.id === previous.id,
+            );
+
+            return refreshedDocument ?? previous;
+          });
+
+          setIsPollingDocuments(
+            response.items.some(
+              (document) => document.status === "processing",
+            ),
+          );
         }
       } catch (err) {
         if (!cancelled) {
@@ -373,8 +391,15 @@ function Dashboard() {
 
     void loadDocumentPage();
 
+    const interval = window.setInterval(() => {
+      if (isPollingDocuments) {
+        setDocumentsRefreshKey((previous) => previous + 1);
+      }
+    }, 3000);
+
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, [
     activeView,
@@ -384,6 +409,8 @@ function Dashboard() {
     documentTypeFilter,
     dateFrom,
     dateTo,
+    documentsRefreshKey,
+    isPollingDocuments,
   ]);
 
   useEffect(() => {
@@ -498,6 +525,7 @@ function Dashboard() {
       );
     } finally {
       setLoading(false);
+      setDocumentsRefreshKey((previous) => previous + 1);
     }
   };
 
