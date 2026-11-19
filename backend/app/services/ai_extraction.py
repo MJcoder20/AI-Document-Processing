@@ -392,12 +392,7 @@ def _extract_groq_invoice_data(
             "confidence_score": {
                 "type": ["number", "null"]
             },
-            "extracted_data": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "additionalProperties": False,
-            },
+
         },
         "required": [
             "supplier_name",
@@ -409,7 +404,6 @@ def _extract_groq_invoice_data(
             "vat_amount",
             "total_amount",
             "confidence_score",
-            "extracted_data",
         ],
         "additionalProperties": False,
     }
