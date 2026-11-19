@@ -1,4 +1,5 @@
-﻿from fastapi import FastAPI, Request
+﻿import logging
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
@@ -11,6 +12,12 @@ from app.core.logging import setup_logging
 from app.middleware.request_logging import RequestLoggingMiddleware
 
 setup_logging()
+
+logger = logging.getLogger(__name__)
+logger.info(
+    "AI provider configured: %s",
+    settings.ai_provider,
+)
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
